@@ -22,6 +22,7 @@ src/
  ├── data/        # 산 정보 및 코스 데이터 (mountains.ts, routes.ts)
  ├── screens/     # 각 화면 컴포넌트 (Home, Map, Safety, Achievement 등)
  └── App.tsx      # 메인 네비게이션 설정
+```
 🚀 실행 방법 (How to Run)이 프로젝트를 내 컴퓨터에서 실행하고 스마트폰으로 확인하는 방법입니다.1. 준비물 (Prerequisites)코드를 실행하기 전, 컴퓨터와 스마트폰에 아래 항목들이 준비되어 있어야 합니다.Node.js (설치 필수)Git (설치 필수)📱 스마트폰에 Expo Go 앱 설치 (iOS App Store / Android Play Store)2. 설치 및 실행 (Installation & Run)Step 1. 저장소 클론Bashgit clone [https://github.com/uujeongmin/SanHaengii-App.git](https://github.com/uujeongmin/SanHaengii-App.git)
 cd SanHaengii-App
 Step 2. 의존성 패키지 설치Bashnpm install
