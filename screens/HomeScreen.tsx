@@ -1,21 +1,21 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { CompositeNavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import type { CompositeNavigationProp } from '@react-navigation/native';
-import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
-import type { RootStackParamList, RootTabParamList, CourseParams } from '../App';
-import { MOUNTAINS, getCoursesByMountain, type Mountain, type MountainCourse } from '../data/mountains';
+import React, { useState } from 'react';
+import {
+  Dimensions,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import type { CourseParams, RootStackParamList, RootTabParamList } from '../App';
+import { MOUNTAINS, getCoursesByMountain, type MountainCourse } from '../data/mountains';
 
 type HomeNavProp = CompositeNavigationProp<
   BottomTabNavigationProp<RootTabParamList, '홈'>,
@@ -74,16 +74,20 @@ export default function HomeScreen() {
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>좋은 아침입니다!</Text>
-            <Text style={styles.subGreeting}>오��의 산행을 계획해 볼까요?</Text>
+            <Text style={styles.subGreeting}>김하늘님의 산행을 계획해 볼까요?</Text>
           </View>
-          <View style={styles.profileWrapper}>
+          <TouchableOpacity
+            style={styles.profileWrapper}
+            onPress={() => navigation.navigate('Profile')}
+            activeOpacity={0.8}
+          >
             <Image
               source={{
                 uri: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&q=80&w=150',
               }}
               style={styles.profileImage}
             />
-          </View>
+          </TouchableOpacity>
         </View>
 
         {/* ── 스마트워치 동기화 ── */}
