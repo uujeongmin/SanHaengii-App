@@ -1,30 +1,28 @@
 # ⛰️ 산행이 (SanHaengii-App)
-**안전하고 스마트한 산행을 위한 리액트 네이티브(Expo) 가이드 앱**
+> **안전하고 스마트한 산행을 위한 리액트 네이티브(Expo) 가이드 앱**
 
 ---
 
 ## 📌 프로젝트 소개
-'산행이'는 등산 초보자부터 전문가까지 모두가 안전하게 산행을 즐길 수 있도록 코스 정보, 실시간 위치 확인, 안전 수칙을 제공하는 서비스입니다.
+**'산행이'**는 등산 초보자부터 전문가까지 모두가 안전하게 산행을 즐길 수 있도록 돕는 모바일 서비스입니다. 직관적인 등산로 정보 제공, 실시간 위치 확인, 그리고 체계적인 안전 가이드를 통해 최상의 산행 경험을 선사합니다.
 
-## 🛠️ 개발 환경 및 기술 스택
-- **Language**: TypeScript
-- **Framework**: React Native (Expo SDK)
-- **Navigation**: React Navigation (Native Stack, Bottom Tabs)
-- **Icons & Graphics**: react-native-svg, Lucide React Native (예정)
-
+## 🛠️ 기술 스택 (Tech Stack)
+| 분류 | 기술 |
+| :--- | :--- |
+| **Framework** | ![React Native](https://img.shields.io/badge/React_Native-61DAFB?style=flat-square&logo=react&logoColor=black) ![Expo](https://img.shields.io/badge/Expo-000020?style=flat-square&logo=expo&logoColor=white) |
+| **Language** | ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) |
+| **Navigation** | React Navigation (Native Stack, Bottom Tabs) |
+| **Graphics** | react-native-svg, Lucide React Native |
 
 ## 📂 폴더 구조 (Project Structure)
-
 ```text
 src/
- ├── assets/      # 이미지 및 폰트 리소스
- ├── components/  # 공통 UI 컴포넌트 (버전 2 진행 예정)
+ ├── assets/      # 이미지, 폰트 등 정적 리소스
+ ├── components/  # 재사용 가능한 공통 UI 컴포넌트
  ├── data/        # 산 정보 및 코스 데이터 (mountains.ts, routes.ts)
- ├── screens/     # 각 화면 컴포넌트 (Home, Map, Safety, Achievement 등)
- └── App.tsx      # 메인 네비게이션 설정
-```
-
-
+ ├── screens/     # 주요 화면 (Home, Map, Safety, Achievement 등)
+ └── App.tsx      # 메인 네비게이션 및 앱 진입점
+ ```
 ## 🚀 실행 방법 (How to Run)
 
 
@@ -52,28 +50,30 @@ src/
 
 
 
-Bash
 
+
+```text
 git clone [https://github.com/uujeongmin/SanHaengii-App.git](https://github.com/uujeongmin/SanHaengii-App.git)
-
+```
+```text
 cd SanHaengii-App
-
+```
 의존성 패키지 설치
 
 
 
-Bash
 
+```text
 npm install
-
+```
 Expo 실행
 
 
 
-Bash
 
+```text
 npx expo start
-
+```
 컴퓨터와 스마트폰이같은 Wi-Fi가 아니라면 npx expo start --tunnel로 실행해보세요
 
 
