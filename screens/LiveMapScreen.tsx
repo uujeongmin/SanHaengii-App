@@ -32,7 +32,7 @@ type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, "내비게이션
 type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
 
 /**
- * "1시간 20분" 또는 "45분" 형태의 문자열을 분 단위 숫자로 변환합니다.
+ * 문자열을 분 단위 숫자로 변환합니다.
  */
 function parseTimeToMinutes(timeStr: string | undefined): number {
   if (!timeStr) return 45;
@@ -112,15 +112,17 @@ export default function LiveMapScreen() {
   const [remainingDist, setRemainingDist] = useState(
     parseFloat(initialDist.replace(/[^\d.]/g, "")) || 3.2,
   );
-  const [dynamicEta, setDynamicEta] = useState(
-    parseTimeToMinutes(params?.time),
-  );
+
+  // 정적 기준 시간 및 동적 실시간 시간
+  const initialMinutes = parseTimeToMinutes(params?.time);
+  const [staticEta, setStaticEta] = useState(initialMinutes);
+  const [dynamicEta, setDynamicEta] = useState(initialMinutes);
   const [timeSaved, setTimeSaved] = useState(0);
 
   /* 센서 시뮬레이션 데이터 */
-  const [currentPace, setCurrentPace] = useState(3.2);
-  const [currentSlope, setCurrentSlope] = useState(12);
-  const [heartRate, setHeartRate] = useState(72);
+  const [currentPace, setCurrentPace] = useState(3.2); // km/h
+  const [currentSlope, setCurrentSlope] = useState(12); // %
+  const [heartRate, setHeartRate] = useState(170); // bpm
 
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
@@ -145,6 +147,7 @@ export default function LiveMapScreen() {
     try {
       setLoading(true);
       // 백엔드의 Tobler 알고리즘이 적용된 실제 경로와 ETA를 가져옵니다.
+      // (현재 위치에서 해당 코스까지의 경로를 계산한다고 가정)
       const result = await apiService.getCourseRoute(id);
 
       const realDistKm = (result.summary.distance_m || 0) / 1000;
@@ -153,9 +156,8 @@ export default function LiveMapScreen() {
       setRemainingDist(realDistKm);
       setDynamicEta(realEtaMin);
 
-      // 기존 정적 데이터 대비 단축 시간 계산 (임의 기준: 정적 시간 - 동적 시간)
-      const staticMin = parseTimeToMinutes(params?.time);
-      setTimeSaved(Math.max(0, staticMin - realEtaMin));
+      // 기존 정적 데이터 대비 단축 시간 계산
+      setTimeSaved(Math.max(0, staticEta - realEtaMin));
     } catch (error) {
       console.error("[LiveMap] Failed to fetch real route data:", error);
     } finally {
@@ -202,27 +204,48 @@ export default function LiveMapScreen() {
     ).start();
   }, []);
 
-  /* ── 센서 데이터 변동 시뮬레이션 (심박수 등) ── */
+  /* ── 센서 데이터 및 실시간 동적 ETA 시뮬레이션 ── */
   useEffect(() => {
     if (!dynamicAnalysis) return;
 
     const interval = setInterval(() => {
+      // 1. 센서 데이터 변동 시뮬레이션
       setHeartRate((prev) => {
-        const next = prev + (Math.random() - 0.5) * 2;
+        const next = prev + (Math.random() - 0.5) * 4;
         return Math.min(160, Math.max(60, next));
       });
 
       setCurrentPace((prev) => {
-        const next = prev + (Math.random() - 0.5) * 0.1;
+        const next = prev + (Math.random() - 0.5) * 0.2;
         return Math.min(6.0, Math.max(1.0, next));
       });
 
-      // 거리 조금씩 감소 시뮬레이션
-      setRemainingDist((prev) => Math.max(0, prev - 0.0001));
+      setCurrentSlope((prev) => {
+        const next = prev + (Math.random() - 0.5) * 2;
+        return Math.round(Math.min(30, Math.max(-10, next)));
+      });
+
+      // 2. 거리 및 ETA 실시간 계산 (현위치로부터의 이동 반영)
+      setRemainingDist((prevDist) => {
+        // 3초당 이동 거리 (km) = pace(km/h) * (3/3600)
+        // 시뮬레이션을 위해 실제보다 약간 더 빠르게 줄어들게 설정
+        const travelDist = (currentPace / 3600) * 10;
+        const nextDist = Math.max(0, prevDist - travelDist);
+
+        // 동적 ETA 계산: (남은 거리 / 현재 페이스) * 60분
+        // Tobler 알고리즘 반영: 경사가 급할수록 실제 속도가 저하됨을 시뮬레이션
+        const slopeAdjustment = 1 + (Math.abs(currentSlope) / 10) * 0.5;
+        const calculatedEta = Math.round(
+          (nextDist / (currentPace / slopeAdjustment)) * 60,
+        );
+
+        setDynamicEta(nextDist > 0 ? Math.max(1, calculatedEta) : 0);
+        return nextDist;
+      });
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [dynamicAnalysis]);
+  }, [dynamicAnalysis, heartRate, currentPace, currentSlope]);
 
   /* SNS 조망점 토글 애니메이션 */
   useEffect(() => {
@@ -287,7 +310,7 @@ export default function LiveMapScreen() {
       {loading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#ffffff" />
-          <Text style={styles.loadingText}>실시간 경로 분석 중...</Text>
+          <Text style={styles.loadingText}>현위치 기반 경로 분석 중...</Text>
         </View>
       )}
 
@@ -428,7 +451,7 @@ export default function LiveMapScreen() {
               <View>
                 <View style={styles.liveRow}>
                   <View style={styles.liveDot} />
-                  <Text style={styles.liveText}>실시간 동적 분석 중</Text>
+                  <Text style={styles.liveText}>실시간 현위치 분석 중</Text>
                 </View>
                 <Text style={styles.etaNumber}>
                   {dynamicEta}
@@ -438,7 +461,7 @@ export default function LiveMapScreen() {
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.distLabel}>잔여 거리</Text>
                 <Text style={styles.distValue}>
-                  {remainingDist.toFixed(1)}km
+                  {remainingDist.toFixed(2)}km
                 </Text>
               </View>
             </View>
@@ -455,7 +478,7 @@ export default function LiveMapScreen() {
               </View>
               <View style={[styles.metricBox, { backgroundColor: "#fff7ed" }]}>
                 <Text style={[styles.metricBoxLabel, { color: "#ea580c" }]}>
-                  전방 경사도
+                  현재 경사도
                 </Text>
                 <Text style={[styles.metricBoxValue, { color: "#ea580c" }]}>
                   {currentSlope}
@@ -480,10 +503,11 @@ export default function LiveMapScreen() {
                 color="#9ca3af"
               />
               <Text style={styles.infoText}>
-                회원님의 심박수({Math.round(heartRate)}bpm)와 DB 고도 기반
-                경사도({currentSlope}%)를 반영하여{" "}
-                <Text style={styles.infoTextBold}>실제 알고리즘에 따른 </Text>
-                도착 시간을 안내합니다.{" "}
+                회원님의 <Text style={styles.infoTextBold}>현위치</Text>에서
+                심박수({Math.round(heartRate)}bpm)와 페이스(
+                {currentPace.toFixed(1)}km/h)를 반영하여{" "}
+                <Text style={styles.infoTextBold}>실제 알고리즘(Tobler) </Text>
+                에 따른 도착 시간을 실시간으로 계산합니다.{" "}
                 {timeSaved > 0 && (
                   <Text style={styles.infoTextBold}>
                     (기존 대비 {timeSaved}분 단축)
@@ -501,7 +525,7 @@ export default function LiveMapScreen() {
               동적 분석이 꺼져 있습니다
             </Text>
             <Text style={styles.analysisOffSub}>
-              위 토글을 켜면 실시간 페이스·경사도 분석이 시작됩니다.
+              위 토글을 켜면 현위치 기반 페이스·경사도 분석이 시작됩니다.
             </Text>
           </View>
         )}
