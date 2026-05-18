@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -8,14 +8,20 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { apiService } from '../data/api';
 
 export default function SafetyScreen() {
   /* ── 배경 글로우 펄스 ── */
   const bgPulse = useRef(new Animated.Value(1)).current;
   /* ── SOS 링 페이드 ── */
   const sosRingOpacity = useRef(new Animated.Value(0.5)).current;
+
+  /* ── 이상 징후 상태 ── */
+  const [isAnomaly, setIsAnomaly] = useState(false);
+  const [anomalyMessage, setAnomalyMessage] = useState('정상 상태');
 
   useEffect(() => {
     Animated.loop(
@@ -51,6 +57,43 @@ export default function SafetyScreen() {
     ).start();
   }, []);
 
+  /**
+   * [Simulate] 워치에서 온 센서 데이터 수신 및 이상 징후 확인
+   */
+  const simulateWatchSignal = async (type: 'NORMAL' | 'FALL') => {
+    console.log(`[Watch] Simulating sensor data: ${type}`);
+    
+    // 시뮬레이션용 데이터
+    const sensorData = {
+      accelerometer: type === 'FALL' ? { x: 35, y: 0, z: 0 } : { x: 0.1, y: 9.8, z: 0 },
+      gyroscope: { x: 0, y: 0, z: 0 },
+      heart_rate: 85
+    };
+
+    try {
+      const result = await apiService.checkAnomaly(sensorData);
+      setIsAnomaly(result.is_anomaly);
+      setAnomalyMessage(result.message);
+
+      if (result.is_anomaly) {
+        Alert.alert(
+          '⚠️ 이상 징후 감지',
+          `${result.message}\n구조 요청을 보내시겠습니까? (30초 후 자동 신고)`,
+          [
+            { text: '상태 괜찮음', onPress: () => {
+              setIsAnomaly(false);
+              setAnomalyMessage('정상 상태');
+            }, style: 'cancel' },
+            { text: '구조 요청', onPress: () => Alert.alert('신고 완료', '119 및 보호자에게 위치가 전송되었습니다.') },
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Failed to check anomaly:', error);
+      Alert.alert('에러', '백엔드 서버와 통신할 수 없습니다.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView
@@ -59,7 +102,7 @@ export default function SafetyScreen() {
         contentContainerStyle={styles.scrollContent}
       >
         {/* ── 빨간 헤더 ── */}
-        <View style={styles.header}>
+        <View style={[styles.header, isAnomaly && { backgroundColor: '#7f1d1d' }]}>
           {/* 배경 글로우 */}
           <Animated.View
             style={[styles.bgGlow, { transform: [{ scale: bgPulse }] }]}
@@ -72,21 +115,26 @@ export default function SafetyScreen() {
             </TouchableOpacity>
           </View>
 
-          <View style={styles.statusBanner}>
+          <View style={[styles.statusBanner, isAnomaly && styles.statusBannerAnomaly]}>
             <View style={styles.statusRow}>
-              <View style={styles.statusDot} />
-              <Text style={styles.statusTitle}>이상 징후 모니터링 중</Text>
+              <View style={[styles.statusDot, isAnomaly && { backgroundColor: '#ef4444' }]} />
+              <Text style={styles.statusTitle}>
+                {isAnomaly ? '이상 징후 발생!' : '이상 징후 모니터링 중'}
+              </Text>
             </View>
             <Text style={styles.statusDesc}>
-              가속도 및 자이로 센서를 통해 급격한 낙하 또는 장기 이동 정지를
-              실시간으로 탐지합니다.
+              {isAnomaly ? anomalyMessage : '가속도 및 자이로 센서를 통해 급격한 낙하 또는 장기 이동 정지를 실시간으로 탐지합니다.'}
             </Text>
           </View>
         </View>
 
         <View style={styles.content}>
           {/* ── SOS 버튼 ── */}
-          <TouchableOpacity style={styles.sosCard} activeOpacity={0.88}>
+          <TouchableOpacity 
+            style={styles.sosCard} 
+            activeOpacity={0.88}
+            onLongPress={() => Alert.alert('긴급 신고', '119에 신고를 접수합니다.')}
+          >
             <View style={styles.sosIconWrapper}>
               <Animated.View
                 style={[styles.sosRing, { opacity: sosRingOpacity }]}
@@ -103,6 +151,22 @@ export default function SafetyScreen() {
               버튼을 길게 누르면 119 및 지정 보호자에게 위치가 전송됩니다.
             </Text>
           </TouchableOpacity>
+
+          {/* ── 시뮬레이션 버튼 (개발용) ── */}
+          <View style={styles.simContainer}>
+            <TouchableOpacity 
+              style={[styles.simBtn, { backgroundColor: '#f3f4f6' }]}
+              onPress={() => simulateWatchSignal('NORMAL')}
+            >
+              <Text style={styles.simBtnText}>정상 신호 시뮬레이션</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.simBtn, { backgroundColor: '#fee2e2' }]}
+              onPress={() => simulateWatchSignal('FALL')}
+            >
+              <Text style={[styles.simBtnText, { color: '#dc2626' }]}>낙하 신호 시뮬레이션</Text>
+            </TouchableOpacity>
+          </View>
 
           {/* ── 자동 신고 프로토콜 ── */}
           <View style={styles.card}>
@@ -296,6 +360,10 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
     zIndex: 10,
   },
+  statusBannerAnomaly: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+  },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -367,6 +435,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 220,
     lineHeight: 20,
+  },
+
+  /* 시뮬레이션 컨테이너 */
+  simContainer: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  simBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  simBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#4b5563',
   },
 
   /* 공통 카드 */
