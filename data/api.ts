@@ -43,6 +43,13 @@ export interface PathResult {
   eta?: string;
 }
 
+export interface AnomalyResult {
+  is_anomaly: boolean;
+  message: string;
+  anomaly_type: string | null;
+  timestamp: string;
+}
+
 export const apiService = {
   /**
    * 모든 산 목록을 가져옵니다.
@@ -186,6 +193,31 @@ export const apiService = {
       return await response.json();
     } catch (error) {
       console.error("[API] Error in getRouteHistory:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 이상 징후를 확인합니다 (백엔드 알고리즘 호출).
+   */
+  async checkAnomaly(sensorData: any): Promise<AnomalyResult> {
+    const url = `${BASE_URL}/api/safety/anomaly`;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sensor_data: sensorData }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to check anomaly (Status: ${response.status})`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in checkAnomaly:", error);
       throw error;
     }
   },
