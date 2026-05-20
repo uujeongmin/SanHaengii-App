@@ -21,6 +21,11 @@ import type {
   RootStackParamList,
   RootTabParamList,
 } from "../App";
+import {
+  getUserDisplayName,
+  getUserInitial,
+  useAuth,
+} from "../contexts/AuthContext";
 import { apiService } from "../data/api";
 import { type Mountain, type MountainCourse } from "../data/mountains";
 
@@ -51,6 +56,7 @@ const MOUNTAIN_GRADIENT_COLORS = [
 
 export default function HomeScreen() {
   const navigation = useNavigation<HomeNavProp>();
+  const { user } = useAuth();
   const [selectedMountainId, setSelectedMountainId] = useState<string | null>(
     null,
   );
@@ -101,6 +107,8 @@ export default function HomeScreen() {
 
   const selectedMountain =
     mountains.find((m) => m.id === selectedMountainId) ?? null;
+  const displayName = getUserDisplayName(user);
+  const userInitial = getUserInitial(user);
 
   function handleStartCourse(course: MountainCourse) {
     const params: CourseParams = {
@@ -131,7 +139,7 @@ export default function HomeScreen() {
           <View>
             <Text style={styles.greeting}>좋은 아침입니다!</Text>
             <Text style={styles.subGreeting}>
-              김하늘님의 산행을 계획해 볼까요?
+              {displayName}님의 산행을 계획해 볼까요?
             </Text>
           </View>
           <TouchableOpacity
@@ -139,12 +147,7 @@ export default function HomeScreen() {
             onPress={() => navigation.navigate("Profile")}
             activeOpacity={0.8}
           >
-            <Image
-              source={{
-                uri: "https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&q=80&w=150",
-              }}
-              style={styles.profileImage}
-            />
+            <Text style={styles.profileInitial}>{userInitial}</Text>
           </TouchableOpacity>
         </View>
 
@@ -492,16 +495,22 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    overflow: "hidden",
     borderWidth: 2,
     borderColor: "#ffffff",
+    backgroundColor: "#dcfce7",
+    alignItems: "center",
+    justifyContent: "center",
     elevation: 3,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
   },
-  profileImage: { width: 48, height: 48 },
+  profileInitial: {
+    color: "#15803d",
+    fontSize: 18,
+    fontWeight: "900",
+  },
   card: {
     backgroundColor: "#ffffff",
     borderRadius: 24,
