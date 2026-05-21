@@ -14,6 +14,22 @@
 | **Navigation** | React Navigation (Native Stack, Bottom Tabs) |
 | **Graphics** | react-native-svg, Lucide React Native |
 
+## ⚙️ 설정 가이드 (Setup Guide)
+
+### 1. 환경 변수 (.env) 설정
+프로젝트 루트에 `.env` 파일을 생성하고 아래 내용을 입력해 주세요.
+```text
+NAVER_MAP_CLIENT_ID=여러분의_네이버_맵_클라이언트_ID
+EXPO_PUBLIC_SUPABASE_URL=여러분의_SUPABASE_URL
+EXPO_PUBLIC_SUPABASE_ANON_KEY=여러분의_SUPABASE_ANON_KEY
+```
+
+### 2. 네이버 지도 SDK 저장소 설정 (자동화)
+안드로이드 빌드 시 네이버 지도 SDK를 내려받기 위해 Maven 저장소 설정이 필요합니다. 현재 `app.config.js`의 `expo-build-properties` 플러그인을 통해 아래 주소가 자동으로 추가되도록 설정되어 있습니다.
+- 저장소 주소: `https://repository.map.naver.com/archive/maven`
+
+---
+
 ## 📂 폴더 구조 (Project Structure)
 ```text
 src/
