@@ -85,24 +85,13 @@ npm install
 Expo 실행
 
 
-
-
-```text
-npx expo start
-```
-컴퓨터와 스마트폰이같은 Wi-Fi가 아니라면 npx expo start --tunnel로 실행해보세요
+이제 네이버 맵 같은 api를 받아오느라
+실행은 안드로이드 에뮬레이터에서 해야 하고 실행은
+npx expo run:android
 
 
 
-터미널에 큰 QR 코드가 나타납니다.
 
-
-
-아이폰(iOS): 기본 카메라 앱을 켜서 QR 코드를 스캔한 뒤, 상단에 뜨는 'Expo Go에서 열기' 알림을 누릅니다.
-
-
-
-안드로이드(Android): 'Expo Go' 앱을 실행하고 화면의 'Scan QR Code' 버튼을 눌러 스캔합니다.
 
 
 
