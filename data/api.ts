@@ -1,5 +1,10 @@
 import { Platform } from "react-native";
-import { Mountain, MountainCourse } from "./mountains";
+import {
+  Mountain,
+  MountainCourse,
+  MOUNTAINS,
+  MOUNTAIN_COURSES,
+} from "./mountains";
 
 const LOCAL_TRAIL_API_BASE_URL =
   Platform.OS === "android" ? "http://10.0.2.2:5001" : "http://localhost:5001";
@@ -7,21 +12,30 @@ const LOCAL_TRAIL_API_BASE_URL =
 /**
  * [중요] 백엔드 서버 주소 설정
  * - 인증/회원 API: Railway 서버
- * - 산/경로 API: 로컬 경로 서버
- * - 실기기 경로 서버 테스트: EXPO_PUBLIC_TRAIL_API_BASE_URL에 컴퓨터 로컬 IP 사용
+ * - 산/경로 데이터 API: Railway 서버의 /data/{table} 엔드포인트
+ * - 직접 좌표 경로 생성 API: 아직 Railway에 없어 로컬 레거시 서버를 유지
  */
 export const AUTH_API_BASE_URL =
   process.env.EXPO_PUBLIC_AUTH_API_BASE_URL ??
   "https://web-production-94f63.up.railway.app";
 
-export const TRAIL_API_BASE_URL =
+export const DATA_API_BASE_URL =
+  process.env.EXPO_PUBLIC_DATA_API_BASE_URL ?? AUTH_API_BASE_URL;
+
+const LEGACY_TRAIL_API_BASE_URL =
   process.env.EXPO_PUBLIC_TRAIL_API_BASE_URL ?? LOCAL_TRAIL_API_BASE_URL;
 
-export const BASE_URL = TRAIL_API_BASE_URL;
+export const TRAIL_API_BASE_URL = DATA_API_BASE_URL;
+export const BASE_URL = DATA_API_BASE_URL;
 
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-const SUPABASE_FETCH_TIMEOUT_MS = 15000;
+const RAILWAY_TABLE_PAGE_SIZE = 1000;
+const COURSE_DISPLAY_LIMIT = 200;
+const DEFAULT_MOUNTAIN_IMAGE =
+  MOUNTAINS[0]?.img ??
+  "https://images.unsplash.com/photo-1685330186861-278ae211fd65?auto=format&fit=crop&q=80&w=800";
+const DEFAULT_COURSE_IMAGE =
+  MOUNTAIN_COURSES[0]?.img ??
+  "https://images.unsplash.com/photo-1685330186861-278ae211fd65?auto=format&fit=crop&q=80&w=800";
 
 export interface Coordinate {
   lat: number;
@@ -80,6 +94,29 @@ export interface UnifiedMountainPath {
   description: string | null;
   nodes: UnifiedMountainNode[] | null;
   courses: UnifiedMountainCourse[] | null;
+}
+
+interface RailwayResponse<T> {
+  success?: boolean;
+  count?: number;
+  data?: T;
+  rows?: T;
+  row?: T;
+  record?: T;
+}
+
+interface SeoulMountainPathRow {
+  id: number;
+  mountain_name: string | null;
+  difficulty?: string | null;
+  uptime?: number | null;
+  downtime?: number | null;
+  length_km?: number | null;
+  path_coords?: unknown;
+  elevations?: unknown;
+  slopes?: unknown;
+  avg_slope?: number | null;
+  info_id?: number | null;
 }
 
 export interface AuthUser {
@@ -153,6 +190,12 @@ export interface LoginResponse {
   user: AuthUser;
   isNewUser: boolean;
 }
+
+let cachedMountains: Mountain[] | null = null;
+let cachedCourseSummaries: SeoulMountainPathRow[] | null = null;
+const courseCache = new Map<string, MountainCourse[]>();
+const unifiedMountainPathCache = new Map<string, UnifiedMountainPath | null>();
+const courseRouteCache = new Map<string, PathResult>();
 
 async function getErrorMessage(
   response: Response,
@@ -248,11 +291,344 @@ function normalizeLoginResponse(data: any): LoginResponse {
   };
 }
 
-function requireSupabaseConfig() {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error("Supabase environment variables are not configured.");
+function unwrapRows<T>(payload: RailwayResponse<T[]> | T[] | any): T[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.rows)) return payload.rows;
+  return [];
+}
+
+function unwrapRow<T>(payload: RailwayResponse<T> | T | any): T | null {
+  if (!payload) return null;
+  if (payload.data && !Array.isArray(payload.data)) return payload.data;
+  if (payload.row && !Array.isArray(payload.row)) return payload.row;
+  if (payload.record && !Array.isArray(payload.record)) return payload.record;
+  return payload;
+}
+
+async function fetchDataRows<T>(
+  table: string,
+  params: Record<string, string>,
+): Promise<T[]> {
+  const query = new URLSearchParams(params);
+  const url = `${DATA_API_BASE_URL}/data/${table}?${query.toString()}`;
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    const message = await getErrorMessage(
+      response,
+      `Failed to fetch ${table} (Status: ${response.status})`,
+    );
+    throw new Error(message);
   }
-  return { url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY };
+
+  return unwrapRows<T>(await response.json());
+}
+
+async function fetchFilteredDataRows<T>(
+  table: string,
+  filters: Record<string, unknown>,
+  params: Record<string, string>,
+): Promise<T[]> {
+  const query = new URLSearchParams(params);
+  const url = `${DATA_API_BASE_URL}/data/${table}/filter?${query.toString()}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(filters),
+  });
+
+  if (!response.ok) {
+    const message = await getErrorMessage(
+      response,
+      `Failed to filter ${table} (Status: ${response.status})`,
+    );
+    throw new Error(message);
+  }
+
+  return unwrapRows<T>(await response.json());
+}
+
+async function fetchDataRow<T>(
+  table: string,
+  rowId: number | string,
+): Promise<T | null> {
+  const url = `${DATA_API_BASE_URL}/data/${table}/${encodeURIComponent(
+    String(rowId),
+  )}`;
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    const message = await getErrorMessage(
+      response,
+      `Failed to fetch ${table} row (Status: ${response.status})`,
+    );
+    throw new Error(message);
+  }
+
+  return unwrapRow<T>(await response.json());
+}
+
+async function fetchPagedDataRows<T>(
+  table: string,
+  select: string,
+): Promise<T[]> {
+  const rows: T[] = [];
+  let offset = 0;
+
+  while (true) {
+    const page = await fetchDataRows<T>(table, {
+      select,
+      limit: String(RAILWAY_TABLE_PAGE_SIZE),
+      offset: String(offset),
+    });
+    rows.push(...page);
+
+    if (page.length < RAILWAY_TABLE_PAGE_SIZE) break;
+    offset += RAILWAY_TABLE_PAGE_SIZE;
+  }
+
+  return rows;
+}
+
+function normalizeMountainKey(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function cleanText(value: unknown, fallback = ""): string {
+  const text = String(value ?? "").trim();
+  return text.length > 0 ? text : fallback;
+}
+
+function toDisplayAltitude(value: unknown): number {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < 0) return 0;
+  return Math.floor(numberValue);
+}
+
+function toDisplayCourseCount(value: number | undefined): number {
+  if (!value || value < 0) return 0;
+  return Math.min(value, COURSE_DISPLAY_LIMIT);
+}
+
+function formatDistanceKm(value: unknown): string {
+  const distance = Number(value);
+  if (!Number.isFinite(distance) || distance <= 0) return "0km";
+  return `${distance.toFixed(distance < 1 ? 2 : 1)}km`;
+}
+
+function formatMinutes(value: unknown): string {
+  const minutes = Math.max(1, Math.round(Number(value) || 0));
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+
+  if (hours > 0 && restMinutes > 0) return `${hours}시간 ${restMinutes}분`;
+  if (hours > 0) return `${hours}시간`;
+  return `${minutes}분`;
+}
+
+function getCourseDurationMinutes(row: SeoulMountainPathRow): number {
+  const total = Number(row.uptime ?? 0) + Number(row.downtime ?? 0);
+  if (Number.isFinite(total) && total > 0) return Math.round(total);
+
+  const distanceKm = Number(row.length_km);
+  if (Number.isFinite(distanceKm) && distanceKm > 0) {
+    return Math.max(1, Math.round((distanceKm / 3) * 60));
+  }
+
+  return 1;
+}
+
+function getFiniteNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
+}
+
+function getElevationGain(elevations: number[]): number {
+  if (elevations.length < 2) return 0;
+
+  let gain = 0;
+  for (let index = 1; index < elevations.length; index++) {
+    const diff = elevations[index] - elevations[index - 1];
+    if (diff > 0) gain += diff;
+  }
+
+  return Math.round(gain);
+}
+
+function getElevationLoss(elevations: number[]): number {
+  if (elevations.length < 2) return 0;
+
+  let loss = 0;
+  for (let index = 1; index < elevations.length; index++) {
+    const diff = elevations[index - 1] - elevations[index];
+    if (diff > 0) loss += diff;
+  }
+
+  return Math.round(loss);
+}
+
+function flattenPathCoords(pathCoords: unknown): Coordinate[] {
+  if (!Array.isArray(pathCoords)) return [];
+
+  const coords: Coordinate[] = [];
+
+  function visit(value: unknown) {
+    if (!Array.isArray(value)) return;
+
+    if (
+      value.length >= 2 &&
+      typeof value[0] === "number" &&
+      typeof value[1] === "number"
+    ) {
+      const lng = Number(value[0]);
+      const lat = Number(value[1]);
+      if (
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        Math.abs(lat) <= 90 &&
+        Math.abs(lng) <= 180
+      ) {
+        const last = coords[coords.length - 1];
+        if (!last || last.lat !== lat || last.lng !== lng) {
+          coords.push({ lat, lng });
+        }
+      }
+      return;
+    }
+
+    value.forEach(visit);
+  }
+
+  visit(pathCoords);
+  return coords;
+}
+
+function formatEta(durationSec: number): string {
+  const eta = new Date(Date.now() + durationSec * 1000);
+  const hours = eta.getHours().toString().padStart(2, "0");
+  const minutes = eta.getMinutes().toString().padStart(2, "0");
+  return `${hours}시 ${minutes}분`;
+}
+
+function getMountainNameFromId(mountainId: string): string {
+  const staticMountain = MOUNTAINS.find((mountain) => mountain.id === mountainId);
+  return staticMountain?.name ?? mountainId;
+}
+
+function normalizeRailwayCourse(
+  row: SeoulMountainPathRow,
+  mountainId: string,
+): MountainCourse {
+  const id = String(row.id);
+  const mountainName = cleanText(row.mountain_name, getMountainNameFromId(mountainId));
+  const elevations = getFiniteNumberArray(row.elevations);
+  const elevationGain = getElevationGain(elevations);
+  const difficulty = cleanText(row.difficulty, "중") as MountainCourse["difficulty"];
+  const distance = formatDistanceKm(row.length_km);
+  const durationMinutes = getCourseDurationMinutes(row);
+  const avgSlope = Number(row.avg_slope);
+  const tags = [
+    `#${difficulty}`,
+    distance !== "0km" ? `#${distance}` : null,
+    Number.isFinite(avgSlope) ? `#평균경사${avgSlope.toFixed(1)}%` : null,
+  ].filter(Boolean) as string[];
+
+  return {
+    id,
+    mountainId,
+    title: `경로 ${id}`,
+    desc: `${mountainName}의 등산 경로입니다.`,
+    img: DEFAULT_COURSE_IMAGE,
+    tags,
+    distance,
+    time: formatMinutes(durationMinutes),
+    difficulty,
+    elevation: elevationGain > 0 ? `+${elevationGain}m` : "+0m",
+    startPoint: mountainName,
+    highlights: [mountainName, `경로 ${id}`],
+    elevationProfile: elevations,
+  };
+}
+
+function normalizeRailwayRoute(row: SeoulMountainPathRow): PathResult {
+  const path = flattenPathCoords(row.path_coords);
+  const elevations = getFiniteNumberArray(row.elevations);
+  const distanceM = Math.round((Number(row.length_km) || 0) * 1000);
+  const durationSec = getCourseDurationMinutes(row) * 60;
+  const ascentM = getElevationGain(elevations);
+  const descentM = getElevationLoss(elevations);
+  const routeId = String(row.id);
+
+  return {
+    route_id: routeId,
+    path,
+    path_names: path.map(
+      (_coord, index) =>
+        `${cleanText(row.mountain_name, "산행 경로")} ${index + 1}`,
+    ),
+    summary: {
+      distance_m: distanceM,
+      duration_sec: durationSec,
+      ascent_m: ascentM,
+      descent_m: descentM,
+      total_distance_m: distanceM,
+      total_hours: Math.floor(durationSec / 3600),
+      total_minutes: Math.floor((durationSec % 3600) / 60),
+      total_seconds: durationSec % 60,
+      eta: formatEta(durationSec),
+    },
+    start_node: path[0] ?? null,
+    end_node: path[path.length - 1] ?? null,
+    total_hours: Math.floor(durationSec / 3600),
+    total_minutes: Math.floor((durationSec % 3600) / 60),
+    total_seconds: durationSec % 60,
+    eta: formatEta(durationSec),
+  };
+}
+
+async function getCourseSummaryRows(): Promise<SeoulMountainPathRow[]> {
+  if (cachedCourseSummaries) return cachedCourseSummaries;
+
+  cachedCourseSummaries = await fetchPagedDataRows<SeoulMountainPathRow>(
+    "seoul_mountain_paths",
+    "id,mountain_name",
+  );
+  return cachedCourseSummaries;
+}
+
+async function getCourseCountByMountain(): Promise<Map<string, number>> {
+  const rows = await getCourseSummaryRows();
+  const counts = new Map<string, number>();
+
+  rows.forEach((row) => {
+    const name = normalizeMountainKey(row.mountain_name);
+    if (!name) return;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  });
+
+  return counts;
+}
+
+function buildMountainFromRailwayRow(
+  row: UnifiedMountainPath,
+  courseCount: number,
+): Mountain {
+  const name = normalizeMountainKey(row.mountain_name);
+
+  return {
+    id: name,
+    name,
+    region: cleanText(row.region, "지역 정보 없음"),
+    altitude: toDisplayAltitude(row.height),
+    description: cleanText(row.description, `${name} 등산로 정보`),
+    img: DEFAULT_MOUNTAIN_IMAGE,
+    courseCount: toDisplayCourseCount(courseCount),
+  };
 }
 
 export const apiService = {
@@ -635,19 +1011,51 @@ export const apiService = {
    * 모든 산 목록을 가져옵니다.
    */
   async getMountains(): Promise<Mountain[]> {
-    const url = `${TRAIL_API_BASE_URL}/api/mountains`;
-    console.log(`[API] Fetching mountains from: ${url}`);
+    const url = `${DATA_API_BASE_URL}/data/unified_mountain_paths`;
+    console.log(`[API] Fetching mountains from Railway: ${url}`);
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        console.error(
-          `[API] Error fetching mountains: ${response.status} ${response.statusText}`,
+      if (cachedMountains) return cachedMountains;
+
+      const [rows, courseCounts] = await Promise.all([
+        fetchDataRows<UnifiedMountainPath>("unified_mountain_paths", {
+          select: "id,mountain_name,region,height,description",
+          limit: "1000",
+        }),
+        getCourseCountByMountain(),
+      ]);
+
+      const mountainsByName = new Map<string, Mountain>();
+
+      MOUNTAINS.forEach((mountain) => {
+        const railwayCourseCount = courseCounts.get(mountain.name);
+        if (railwayCourseCount === undefined) return;
+
+        mountainsByName.set(mountain.name, {
+          ...mountain,
+          courseCount: toDisplayCourseCount(railwayCourseCount),
+        });
+      });
+
+      rows.forEach((row) => {
+        const name = normalizeMountainKey(row.mountain_name);
+        if (!name || mountainsByName.has(name)) return;
+
+        const courseCount = courseCounts.get(name) ?? 0;
+        if (courseCount <= 0) return;
+
+        mountainsByName.set(
+          name,
+          buildMountainFromRailwayRow(row, courseCount),
         );
-        throw new Error(
-          `Failed to fetch mountains (Status: ${response.status})`,
-        );
+      });
+
+      cachedMountains = Array.from(mountainsByName.values());
+
+      if (cachedMountains.length === 0) {
+        throw new Error("Railway에서 표시 가능한 산 데이터를 찾지 못했습니다.");
       }
-      return await response.json();
+
+      return cachedMountains;
     } catch (error) {
       console.error("[API] Error in getMountains:", error);
       throw error;
@@ -658,19 +1066,18 @@ export const apiService = {
    * 특정 산의 정보를 가져옵니다.
    */
   async getMountain(mountainId: string): Promise<Mountain> {
-    const url = `${TRAIL_API_BASE_URL}/api/mountains/${mountainId}`;
-    console.log(`[API] Fetching mountain ${mountainId} from: ${url}`);
+    console.log(`[API] Fetching mountain ${mountainId} from Railway data`);
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        console.error(
-          `[API] Error fetching mountain: ${response.status} ${response.statusText}`,
-        );
-        throw new Error(
-          `Failed to fetch mountain (Status: ${response.status})`,
-        );
+      const mountains = await this.getMountains();
+      const mountain =
+        mountains.find((item) => item.id === mountainId) ??
+        mountains.find((item) => item.name === mountainId);
+
+      if (!mountain) {
+        throw new Error(`산 정보를 찾지 못했습니다: ${mountainId}`);
       }
-      return await response.json();
+
+      return mountain;
     } catch (error) {
       console.error("[API] Error in getMountain:", error);
       throw error;
@@ -681,19 +1088,35 @@ export const apiService = {
    * 특정 산의 코스 목록을 가져옵니다.
    */
   async getCourses(mountainId: string): Promise<MountainCourse[]> {
-    const url = `${TRAIL_API_BASE_URL}/api/mountains/${mountainId}/courses`;
     console.log(
-      `[API] Fetching courses for mountain ${mountainId} from: ${url}`,
+      `[API] Fetching courses for mountain ${mountainId} from Railway data`,
     );
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        console.error(
-          `[API] Error fetching courses: ${response.status} ${response.statusText}`,
-        );
-        throw new Error(`Failed to fetch courses (Status: ${response.status})`);
+      const cached = courseCache.get(mountainId);
+      if (cached) return cached;
+
+      const mountainName = getMountainNameFromId(mountainId);
+      const rows = await fetchFilteredDataRows<SeoulMountainPathRow>(
+        "seoul_mountain_paths",
+        { mountain_name: mountainName },
+        {
+          select:
+            "id,mountain_name,difficulty,uptime,downtime,length_km,path_coords,elevations,slopes,avg_slope,info_id",
+          limit: String(COURSE_DISPLAY_LIMIT),
+        },
+      );
+
+      const railwayCourses = rows.map((row) =>
+        normalizeRailwayCourse(row, mountainId),
+      );
+
+      if (railwayCourses.length > 0) {
+        courseCache.set(mountainId, railwayCourses);
+        return railwayCourses;
       }
-      return await response.json();
+
+      courseCache.set(mountainId, []);
+      return [];
     } catch (error) {
       console.error("[API] Error in getCourses:", error);
       throw error;
@@ -704,22 +1127,23 @@ export const apiService = {
    * 코스 ID를 기반으로 실제 경로와 ETA를 가져옵니다. (알고리즘 연동)
    */
   async getCourseRoute(courseId: string): Promise<PathResult> {
-    const url = `${TRAIL_API_BASE_URL}/api/courses/${courseId}/route`;
-    console.log(`[API] Fetching course route for ${courseId} from: ${url}`);
+    console.log(`[API] Fetching course route ${courseId} from Railway data`);
     try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error(
-          `[API] Error fetching course route: ${response.status}`,
-          errorData,
-        );
-        throw new Error(
-          errorData.error ||
-            `Failed to fetch course route (Status: ${response.status})`,
-        );
+      const cached = courseRouteCache.get(courseId);
+      if (cached) return cached;
+
+      const row = await fetchDataRow<SeoulMountainPathRow>(
+        "seoul_mountain_paths",
+        courseId,
+      );
+
+      if (!row) {
+        throw new Error(`코스 경로를 찾지 못했습니다: ${courseId}`);
       }
-      return await response.json();
+
+      const route = normalizeRailwayRoute(row);
+      courseRouteCache.set(courseId, route);
+      return route;
     } catch (error) {
       console.error("[API] Error in getCourseRoute:", error);
       throw error;
@@ -730,7 +1154,7 @@ export const apiService = {
    * 새로운 경로를 생성합니다 (직접 좌표 입력).
    */
   async createRoute(start: Coordinate, end: Coordinate): Promise<PathResult> {
-    const url = `${TRAIL_API_BASE_URL}/api/routes`;
+    const url = `${LEGACY_TRAIL_API_BASE_URL}/api/routes`;
     console.log(`[API] Creating route at: ${url}`);
     try {
       const response = await fetch(url, {
@@ -764,7 +1188,7 @@ export const apiService = {
    * 경로 히스토리를 가져옵니다.
    */
   async getRouteHistory(): Promise<any[]> {
-    const url = `${TRAIL_API_BASE_URL}/api/routes/history`;
+    const url = `${LEGACY_TRAIL_API_BASE_URL}/api/routes/history`;
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -778,52 +1202,40 @@ export const apiService = {
   },
 
   /**
-   * Supabase에 저장된 통합 산 경로 데이터를 가져옵니다.
+   * Railway에 저장된 통합 산 경로 데이터를 가져옵니다.
    */
   async getUnifiedMountainPath(
     mountainName: string,
   ): Promise<UnifiedMountainPath | null> {
-    const { url: supabaseUrl, anonKey } = requireSupabaseConfig();
-
-    const query = new URLSearchParams({
-      select: "id,mountain_name,region,height,description,nodes,courses",
-      mountain_name: `eq.${mountainName}`,
-      limit: "1",
-    });
-    const url = `${supabaseUrl}/rest/v1/unified_mountain_paths?${query.toString()}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      SUPABASE_FETCH_TIMEOUT_MS,
-    );
-
     try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          apikey: anonKey,
-          Authorization: `Bearer ${anonKey}`,
-        },
-      });
-
-      if (!response.ok) {
-        const message = await response.text();
-        console.error(
-          `[API] Error fetching unified mountain path: ${response.status}`,
-          message,
-        );
-        throw new Error(
-          `Failed to fetch unified mountain path (Status: ${response.status})`,
-        );
+      const cacheKey = normalizeMountainKey(mountainName);
+      if (unifiedMountainPathCache.has(cacheKey)) {
+        return unifiedMountainPathCache.get(cacheKey) ?? null;
       }
 
-      const rows = (await response.json()) as UnifiedMountainPath[];
-      return rows[0] ?? null;
+      const rows = await fetchFilteredDataRows<UnifiedMountainPath>(
+        "unified_mountain_paths",
+        { mountain_name: cacheKey },
+        {
+          select: "id,mountain_name,region,height,description,nodes,courses",
+          limit: "10",
+        },
+      );
+      const bestRow =
+        rows
+          .filter((row) => row.nodes?.length && row.courses?.length)
+          .sort(
+            (a, b) =>
+              (b.nodes?.length ?? 0) +
+              (b.courses?.length ?? 0) -
+              ((a.nodes?.length ?? 0) + (a.courses?.length ?? 0)),
+          )[0] ?? null;
+
+      unifiedMountainPathCache.set(cacheKey, bestRow);
+      return bestRow;
     } catch (error) {
       console.error("[API] Error in getUnifiedMountainPath:", error);
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
   },
 };
