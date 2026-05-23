@@ -41,3 +41,7 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Android local configuration
+android/local.properties
+local.properties
