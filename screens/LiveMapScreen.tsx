@@ -1,30 +1,100 @@
-import React, { useRef, useEffect, useState } from 'react';
+import { Ionicons } from "@expo/vector-icons";
 import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
+  NaverMapMarkerOverlay,
+  NaverMapMultiPathOverlay,
+  NaverMapPathOverlay,
+  NaverMapView,
+  type MultiPathPart,
+  type Region,
+} from "@mj-studio/react-native-naver-map";
+import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
+import type { RouteProp } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
   Animated,
   Easing,
+  LayoutAnimation,
   Platform,
   StatusBar,
-  LayoutAnimation,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
   UIManager,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute } from '@react-navigation/native';
-import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
-import type { RouteProp } from '@react-navigation/native';
-import type { RootTabParamList, CourseParams } from '../App';
+  View,
+} from "react-native";
+import type { CourseParams, RootTabParamList } from "../App";
+import { useAuth } from "../contexts/AuthContext";
+import { apiService, type UnifiedMountainNode } from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, '내비게이션'>;
-type LiveMapRouteProp = RouteProp<RootTabParamList, '내비게이션'>;
+type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, "내비게이션">;
+type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
+const UNIFIED_PATH_CHUNK_SIZE = 1200;
+const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
+
+/**
+ * 문자열을 분 단위 숫자로 변환합니다.
+ */
+function parseTimeToMinutes(timeStr: string | undefined): number {
+  if (!timeStr) return 45;
+
+  const hourMatch = timeStr.match(/(\d+)시간/);
+  const minMatch = timeStr.match(/(\d+)분/);
+
+  let totalMinutes = 0;
+  if (hourMatch) {
+    totalMinutes += parseInt(hourMatch[1], 10) * 60;
+  }
+  if (minMatch) {
+    totalMinutes += parseInt(minMatch[1], 10);
+  }
+
+  // 만약 숫자만 들어있는 경우 (예: "45")
+  if (!hourMatch && !minMatch) {
+    const onlyNum = parseInt(timeStr.replace(/[^\d]/g, ""), 10);
+    return isNaN(onlyNum) ? 45 : onlyNum;
+  }
+
+  return totalMinutes || 45;
+}
+
+function parseDistanceKm(distanceStr: string | undefined): number {
+  if (!distanceStr) return 0;
+  const value = Number(distanceStr.replace(/[^\d.]/g, ""));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function parseElevationMeters(elevationStr: string | undefined): number {
+  if (!elevationStr) return 0;
+  const value = Number(elevationStr.replace(/[^\d.-]/g, ""));
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+function estimateCalories(
+  distanceKm: number,
+  durationMinutes: number,
+  elevationGainM: number,
+  avgHeartRate: number,
+): number {
+  const distanceCalories = distanceKm * 55;
+  const timeCalories = durationMinutes * 4.5;
+  const climbCalories = elevationGainM * 0.35;
+  const heartRateBonus = Math.max(0, avgHeartRate - 100) * 1.2;
+  return Math.max(
+    1,
+    Math.round(distanceCalories + timeCalories + climbCalories + heartRateBonus),
+  );
+}
 
 /* ── 토글 스위치 컴포넌트 ── */
 interface ToggleSwitchProps {
@@ -32,7 +102,11 @@ interface ToggleSwitchProps {
   onChange: (v: boolean) => void;
   activeColor?: string;
 }
-function ToggleSwitch({ enabled, onChange, activeColor = '#22c55e' }: ToggleSwitchProps) {
+function ToggleSwitch({
+  enabled,
+  onChange,
+  activeColor = "#22c55e",
+}: ToggleSwitchProps) {
   const translateX = useRef(new Animated.Value(enabled ? 20 : 0)).current;
 
   useEffect(() => {
@@ -48,7 +122,10 @@ function ToggleSwitch({ enabled, onChange, activeColor = '#22c55e' }: ToggleSwit
     <TouchableOpacity
       activeOpacity={0.85}
       onPress={() => onChange(!enabled)}
-      style={[styles.toggleTrack, { backgroundColor: enabled ? activeColor : '#d1d5db' }]}
+      style={[
+        styles.toggleTrack,
+        { backgroundColor: enabled ? activeColor : "#d1d5db" },
+      ]}
     >
       <Animated.View
         style={[styles.toggleThumb, { transform: [{ translateX }] }]}
@@ -57,45 +134,331 @@ function ToggleSwitch({ enabled, onChange, activeColor = '#22c55e' }: ToggleSwit
   );
 }
 
+// 라이브러리 인터페이스에 맞게 변환
+interface MapCoord {
+  latitude: number;
+  longitude: number;
+}
+
 export default function LiveMapScreen() {
   const navigation = useNavigation<LiveMapNavProp>();
   const route = useRoute<LiveMapRouteProp>();
+  const { isGuest, token, user } = useAuth();
 
   /* 코스 파라미터 (홈에서 전달, 없으면 기본값) */
   const params = route.params as CourseParams | undefined;
-  const courseName  = params?.courseName  ?? '관절 보호 완만 코스';
-  const mountainName = params?.mountainName ?? '';
-  const distance    = params?.distance    ?? '3.2km';
-  const elevation   = params?.elevation   ?? '+180m';
+  const courseId = params?.courseId;
+  const courseName = params?.courseName ?? "관절 보호 완만 코스";
+  const mountainName = params?.mountainName ?? "";
+  const initialDist = params?.distance ?? "3.2km";
+  const elevation = params?.elevation ?? "+180m";
+  const initialDistanceKm = parseDistanceKm(initialDist) || 3.2;
+  const elevationGainM = parseElevationMeters(elevation);
+
+  /* ── 실시간 데이터 상태 (알고리즘 연동) ── */
+  const [loading, setLoading] = useState(false);
+  const [savingRecord, setSavingRecord] = useState(false);
+  const [remainingDist, setRemainingDist] = useState(initialDistanceKm);
+  const [totalRouteDistanceKm, setTotalRouteDistanceKm] =
+    useState(initialDistanceKm);
+
+  // 지도 관련 상태
+  const [routePath, setRoutePath] = useState<MapCoord[]>([]);
+  const [unifiedPathPartChunks, setUnifiedPathPartChunks] = useState<
+    MultiPathPart[][]
+  >([]);
+  const [mapRegion, setMapRegion] = useState<Region | undefined>(undefined);
+  const [startPoint, setStartPoint] = useState<MapCoord | null>(null);
+  const [endPoint, setEndPoint] = useState<MapCoord | null>(null);
+  const [currentLocation, setCurrentLocation] = useState<MapCoord>({
+    latitude: 37.5665,
+    longitude: 126.978,
+  });
+
+  // 정적 기준 시간 및 동적 실시간 시간
+  const initialMinutes = parseTimeToMinutes(params?.time);
+  const [staticEta, setStaticEta] = useState(initialMinutes);
+  const [dynamicEta, setDynamicEta] = useState(initialMinutes);
+  const [timeSaved, setTimeSaved] = useState(0);
+
+  /* 센서 시뮬레이션 데이터 */
+  const [currentPace, setCurrentPace] = useState(3.2); // km/h
+  const [currentSlope, setCurrentSlope] = useState(12); // %
+  const [heartRate, setHeartRate] = useState(170); // bpm
+  const [unifiedLoading, setUnifiedLoading] = useState(false);
 
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
   const [snsSpot, setSnsSpot] = useState(true);
 
-  /* ── 기존 애니메이션 ── */
-  const notifOpacity     = useRef(new Animated.Value(0)).current;
-  const notifTranslateY  = useRef(new Animated.Value(-20)).current;
-  const dashboardTransY  = useRef(new Animated.Value(120)).current;
-  const markerScale      = useRef(new Animated.Value(1)).current;
-  // SNS 알림 카드 페이드 (토글용)
-  const snsOpacity       = useRef(new Animated.Value(1)).current;
-  // 동적 분석 패널 높이 대신 opacity 애니메이션
-  const analysisOpacity  = useRef(new Animated.Value(1)).current;
+  /* ── 애니메이션 참조 ── */
+  const notifOpacity = useRef(new Animated.Value(0)).current;
+  const notifTranslateY = useRef(new Animated.Value(-20)).current;
+  const dashboardTransY = useRef(new Animated.Value(120)).current;
+  const snsOpacity = useRef(new Animated.Value(1)).current;
+  const analysisOpacity = useRef(new Animated.Value(1)).current;
+  const unifiedChunkTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const hikeStartedAt = useRef(Date.now());
+
+  /* ── 실제 알고리즘 데이터 로드 ── */
+  useEffect(() => {
+    setRemainingDist(initialDistanceKm);
+    setTotalRouteDistanceKm(initialDistanceKm);
+    setStaticEta(initialMinutes);
+    setDynamicEta(initialMinutes);
+    setTimeSaved(0);
+    hikeStartedAt.current = Date.now();
+  }, [courseId, initialDistanceKm, initialMinutes]);
+
+  useEffect(() => {
+    if (courseId) {
+      fetchRealAlgorithmData(courseId);
+    }
+  }, [courseId]);
+
+  useEffect(() => {
+    const normalizedMountainName = mountainName.trim();
+    if (normalizedMountainName) {
+      fetchUnifiedMountainPath(normalizedMountainName);
+    } else {
+      clearUnifiedPathTimers();
+      setUnifiedPathPartChunks([]);
+      setMapRegion(undefined);
+    }
+
+    return clearUnifiedPathTimers;
+  }, [mountainName]);
+
+  async function fetchRealAlgorithmData(id: string) {
+    try {
+      setLoading(true);
+      const result = await apiService.getCourseRoute(id);
+
+      const realDistKm = (result.summary.distance_m || 0) / 1000;
+      const realEtaMin = Math.round((result.summary.duration_sec || 0) / 60);
+
+      setTotalRouteDistanceKm(realDistKm || initialDistanceKm);
+      setRemainingDist(realDistKm);
+      setDynamicEta(realEtaMin);
+      setTimeSaved(Math.max(0, staticEta - realEtaMin));
+
+      // 경로 데이터 설정
+      if (result.path && result.path.length > 0) {
+        const mappedPath = result.path.map((p: any) => ({
+          latitude: p.lat,
+          longitude: p.lng,
+        }));
+        setRoutePath(mappedPath);
+        setStartPoint(mappedPath[0]);
+        setEndPoint(mappedPath[mappedPath.length - 1]);
+        setCurrentLocation(mappedPath[0]); // 시뮬레이션 시작 위치
+      }
+    } catch (error) {
+      console.error("[LiveMap] Failed to fetch real route data:", error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchUnifiedMountainPath(name: string) {
+    try {
+      clearUnifiedPathTimers();
+      setUnifiedLoading(true);
+      setUnifiedPathPartChunks([]);
+      const result = await apiService.getUnifiedMountainPath(name);
+
+      if (!result?.nodes?.length || !result?.courses?.length) {
+        setUnifiedPathPartChunks([]);
+        return;
+      }
+
+      const nodeMap = new Map<string, MapCoord>();
+      result.nodes.forEach((node) => {
+        if (isValidUnifiedNode(node)) {
+          nodeMap.set(String(node.id), {
+            latitude: node.lat,
+            longitude: node.lng,
+          });
+        }
+      });
+
+      const seenEdges = new Set<string>();
+      const pathParts: MultiPathPart[] = [];
+
+      result.courses.forEach((course) => {
+        const nodeIds = Array.isArray(course.node_ids) ? course.node_ids : [];
+        if (nodeIds.length < 2) return;
+
+        for (let index = 0; index < nodeIds.length - 1; index++) {
+          const fromId = String(nodeIds[index]);
+          const toId = String(nodeIds[index + 1]);
+          const fromCoord = nodeMap.get(fromId);
+          const toCoord = nodeMap.get(toId);
+
+          if (!fromCoord || !toCoord) continue;
+
+          const edgeKey =
+            fromId.localeCompare(toId, undefined, { numeric: true }) <= 0
+              ? `${fromId}-${toId}`
+              : `${toId}-${fromId}`;
+          if (seenEdges.has(edgeKey)) continue;
+          seenEdges.add(edgeKey);
+
+          pathParts.push({
+            coords: [fromCoord, toCoord],
+            color: "#ef4444",
+            passedColor: "#ef4444",
+            outlineColor: "#0ea5e9",
+            passedOutlineColor: "#0ea5e9",
+          });
+        }
+      });
+
+      const boundsRegion = createRegionFromNodes(result.nodes);
+      if (boundsRegion) {
+        setMapRegion(boundsRegion);
+      }
+
+      if (pathParts.length > 0 && routePath.length === 0) {
+        const firstCoord = pathParts[0].coords[0];
+        setCurrentLocation(firstCoord);
+      }
+
+      setUnifiedLoading(false);
+      revealUnifiedPathChunks(pathParts);
+    } catch (error) {
+      console.error("[LiveMap] Failed to fetch unified mountain path:", error);
+      setUnifiedPathPartChunks([]);
+    } finally {
+      setUnifiedLoading(false);
+    }
+  }
+
+  function clearUnifiedPathTimers() {
+    unifiedChunkTimeouts.current.forEach(clearTimeout);
+    unifiedChunkTimeouts.current = [];
+  }
+
+  function revealUnifiedPathChunks(pathParts: MultiPathPart[]) {
+    clearUnifiedPathTimers();
+
+    const chunks: MultiPathPart[][] = [];
+    for (
+      let index = 0;
+      index < pathParts.length;
+      index += UNIFIED_PATH_CHUNK_SIZE
+    ) {
+      chunks.push(pathParts.slice(index, index + UNIFIED_PATH_CHUNK_SIZE));
+    }
+
+    chunks.forEach((chunk, index) => {
+      const timeout = setTimeout(() => {
+        setUnifiedPathPartChunks((prev) => [...prev, chunk]);
+      }, index * UNIFIED_PATH_CHUNK_DELAY_MS);
+      unifiedChunkTimeouts.current.push(timeout);
+    });
+  }
+
+  function isValidUnifiedNode(node: UnifiedMountainNode): boolean {
+    return (
+      Number.isFinite(node.lat) &&
+      Number.isFinite(node.lng) &&
+      Math.abs(node.lat) <= 90 &&
+      Math.abs(node.lng) <= 180
+    );
+  }
+
+  function createRegionFromNodes(nodes: UnifiedMountainNode[]): Region | null {
+    const validNodes = nodes.filter(isValidUnifiedNode);
+    if (validNodes.length === 0) return null;
+
+    const lats = validNodes.map((node) => node.lat);
+    const lngs = validNodes.map((node) => node.lng);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    const latDelta = Math.max((maxLat - minLat) * 1.18, 0.01);
+    const lngDelta = Math.max((maxLng - minLng) * 1.18, 0.01);
+
+    return {
+      latitude: minLat - (latDelta - (maxLat - minLat)) / 2,
+      longitude: minLng - (lngDelta - (maxLng - minLng)) / 2,
+      latitudeDelta: latDelta,
+      longitudeDelta: lngDelta,
+    };
+  }
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(notifOpacity,    { toValue: 1, duration: 600, delay: 500, useNativeDriver: true }),
-      Animated.timing(notifTranslateY, { toValue: 0, duration: 600, delay: 500, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-      Animated.timing(dashboardTransY, { toValue: 0, duration: 500, easing: Easing.out(Easing.back(1.1)), useNativeDriver: true }),
+      Animated.timing(notifOpacity, {
+        toValue: 1,
+        duration: 600,
+        delay: 500,
+        useNativeDriver: true,
+      }),
+      Animated.timing(notifTranslateY, {
+        toValue: 0,
+        duration: 600,
+        delay: 500,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.timing(dashboardTransY, {
+        toValue: 0,
+        duration: 500,
+        easing: Easing.out(Easing.back(1.1)),
+        useNativeDriver: true,
+      }),
     ]).start();
-
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(markerScale, { toValue: 1.25, duration: 1000, useNativeDriver: true }),
-        Animated.timing(markerScale, { toValue: 1,    duration: 1000, useNativeDriver: true }),
-      ])
-    ).start();
   }, []);
+
+  /* ── 센서 데이터 및 실시간 동적 ETA 시뮬레이션 ── */
+  useEffect(() => {
+    if (!dynamicAnalysis || routePath.length === 0) return;
+
+    let pathIndex = 0;
+    const interval = setInterval(() => {
+      // 1. 센서 데이터 변동 시뮬레이션
+      setHeartRate((prev) => {
+        const next = prev + (Math.random() - 0.5) * 4;
+        return Math.min(160, Math.max(60, next));
+      });
+
+      setCurrentPace((prev) => {
+        const next = prev + (Math.random() - 0.5) * 0.2;
+        return Math.min(6.0, Math.max(1.0, next));
+      });
+
+      setCurrentSlope((prev) => {
+        const next = prev + (Math.random() - 0.5) * 2;
+        return Math.round(Math.min(30, Math.max(-10, next)));
+      });
+
+      // 2. 거리 및 ETA 실시간 계산 (현위치로부터의 이동 반영)
+      setRemainingDist((prevDist) => {
+        const travelDist = (currentPace / 3600) * 10;
+        const nextDist = Math.max(0, prevDist - travelDist);
+
+        const slopeAdjustment = 1 + (Math.abs(currentSlope) / 10) * 0.5;
+        const calculatedEta = Math.round(
+          (nextDist / (currentPace / slopeAdjustment)) * 60,
+        );
+
+        setDynamicEta(nextDist > 0 ? Math.max(1, calculatedEta) : 0);
+
+        // 지도 상의 현재 위치 업데이트 (시뮬레이션)
+        if (pathIndex < routePath.length - 1) {
+          pathIndex++;
+          setCurrentLocation(routePath[pathIndex]);
+        }
+
+        return nextDist;
+      });
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [dynamicAnalysis, routePath, currentPace, currentSlope]);
 
   /* SNS 조망점 토글 애니메이션 */
   useEffect(() => {
@@ -116,41 +479,183 @@ export default function LiveMapScreen() {
     }).start();
   }, [dynamicAnalysis]);
 
-  const statusBarHeight = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) : 44;
+  const statusBarHeight =
+    Platform.OS === "android" ? (StatusBar.currentHeight ?? 24) : 44;
+  const isLoading = loading || unifiedLoading;
+  const estimatedDurationMinutes = Math.max(
+    1,
+    Math.round((Date.now() - hikeStartedAt.current) / 60000),
+    totalRouteDistanceKm > 0 && remainingDist <= 0.05 ? initialMinutes : 0,
+  );
+  const estimatedCalories = estimateCalories(
+    totalRouteDistanceKm,
+    estimatedDurationMinutes,
+    elevationGainM,
+    Math.round(heartRate),
+  );
+
+  async function handleSaveHikingRecord() {
+    if (!user || isGuest) {
+      Alert.alert(
+        "로그인이 필요해요",
+        "산행 기록은 카카오 로그인 후 계정에 저장할 수 있어요.",
+      );
+      return;
+    }
+
+    if (savingRecord) return;
+
+    try {
+      setSavingRecord(true);
+      await apiService.createHikingRecord(
+        {
+          userId: user.id,
+          mountainName: mountainName || "선택한 산",
+          courseId: courseId ?? null,
+          courseName,
+          durationMinutes: estimatedDurationMinutes,
+          distanceKm: totalRouteDistanceKm,
+          calories: estimatedCalories,
+          avgHeartRate: Math.round(heartRate),
+          maxAltitude: elevationGainM,
+          elevationGainM,
+        },
+        token,
+      );
+
+      Alert.alert("산행 기록 저장", "이번 산행이 성취도에 반영됐어요.", [
+        { text: "확인", onPress: () => navigation.navigate("성취도") },
+      ]);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "산행 기록을 저장하지 못했습니다.";
+      Alert.alert("저장 실패", message);
+    } finally {
+      setSavingRecord(false);
+    }
+  }
 
   return (
     <View style={styles.container}>
-      {/* ── 지형도 배경 ── */}
-      <Image
-        source={{ uri: 'https://images.unsplash.com/photo-1732783384071-0cdb7bbbad94?auto=format&fit=crop&q=80&w=800' }}
-        style={styles.mapImage}
-        resizeMode="cover"
-      />
-      <View style={styles.overlay} />
+      {/* ── 네이버 지도 ── */}
+      <NaverMapView
+        style={StyleSheet.absoluteFillObject}
+        camera={mapRegion ? undefined : { ...currentLocation, zoom: 15 }}
+        region={mapRegion}
+        animationDuration={500}
+        mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
+        layerGroups={{
+          BUILDING: true,
+          TRAFFIC: false,
+          TRANSIT: false,
+          BICYCLE: false,
+          MOUNTAIN: true,
+          CADASTRAL: false,
+        }}
+        isShowScaleBar={true}
+        isShowLocationButton={false}
+      >
+        {/* 통합 경로 네트워크 표시 */}
+        {unifiedPathPartChunks.map((pathParts, index) => (
+          <NaverMapMultiPathOverlay
+            key={`unified-path-${index}`}
+            pathParts={pathParts}
+            width={3}
+            outlineWidth={2}
+            zIndex={1}
+            isHideCollidedSymbols={false}
+          />
+        ))}
+
+        {/* 경로 표시 */}
+        {routePath.length > 1 && (
+          <NaverMapPathOverlay
+            coords={routePath}
+            width={6}
+            color="#3b82f6"
+            outlineWidth={2}
+            outlineColor="#ffffff"
+            passedColor="#94a3b8"
+            zIndex={5}
+          />
+        )}
+
+        {/* 현재 위치 마커 */}
+        <NaverMapMarkerOverlay
+          latitude={currentLocation.latitude}
+          longitude={currentLocation.longitude}
+          width={24}
+          height={24}
+          image={require("../assets/images/favicon.png")} // 임시 아이콘
+          caption={{ text: "현위치" }}
+          subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
+        />
+
+        {/* 출발/도착 마커 */}
+        {startPoint && (
+          <NaverMapMarkerOverlay
+            latitude={startPoint.latitude}
+            longitude={startPoint.longitude}
+            width={30}
+            height={30}
+            image={{ symbol: "green" }}
+            caption={{ text: "출발" }}
+          />
+        )}
+        {endPoint && (
+          <NaverMapMarkerOverlay
+            latitude={endPoint.latitude}
+            longitude={endPoint.longitude}
+            width={30}
+            height={30}
+            image={{ symbol: "red" }}
+            caption={{ text: "도착" }}
+          />
+        )}
+      </NaverMapView>
+
+      <View style={styles.overlay} pointerEvents="none" />
 
       {/* ── 상단 네비 바 ── */}
       <View style={[styles.topBar, { top: statusBarHeight + 12 }]}>
-        {/* 코스 레이블 (선택된 코스명 반영) */}
         <View style={styles.routeLabel}>
           <Ionicons name="navigate" size={16} color="#ffffff" />
           <View style={{ flex: 1, minWidth: 0 }}>
             {mountainName ? (
-              <Text style={styles.routeLabelSub} numberOfLines={1}>{mountainName}</Text>
+              <Text style={styles.routeLabelSub} numberOfLines={1}>
+                {mountainName}
+              </Text>
             ) : null}
-            <Text style={styles.routeLabelText} numberOfLines={1}>{courseName}</Text>
+            <Text style={styles.routeLabelText} numberOfLines={1}>
+              {courseName}
+            </Text>
           </View>
         </View>
 
         <TouchableOpacity
           style={styles.sosButton}
-          onPress={() => navigation.navigate('안전설정')}
+          onPress={() => navigation.navigate("안전설정")}
           activeOpacity={0.85}
         >
           <Ionicons name="warning" size={22} color="#ffffff" />
         </TouchableOpacity>
       </View>
 
-      {/* ── SNS 인기 조망점 알림 (토글 ON 시 표시) ── */}
+      {/* ── 로딩 인디케이터 ── */}
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.loadingText}>
+            {unifiedLoading
+              ? `${mountainName || "산"} 통합 경로 불러오는 중...`
+              : "현위치 기반 경로 분석 중..."}
+          </Text>
+        </View>
+      )}
+
+      {/* ── SNS 인기 조망점 알림 ── */}
       <Animated.View
         style={[
           styles.notifCard,
@@ -161,7 +666,7 @@ export default function LiveMapScreen() {
           },
           !snsSpot && styles.notifCardHidden,
         ]}
-        pointerEvents={snsSpot ? 'auto' : 'none'}
+        pointerEvents={snsSpot ? "auto" : "none"}
       >
         <View style={styles.notifIconWrap}>
           <Ionicons name="camera" size={22} color="#9333ea" />
@@ -174,57 +679,62 @@ export default function LiveMapScreen() {
             <Text style={styles.notifDist}>전방 300m</Text>
           </View>
           <Text style={styles.notifTitle}>
-            SNS 인기 조망점{mountainName ? ` (${mountainName})` : ''}
+            SNS 인기 조망점{mountainName ? ` (${mountainName})` : ""}
           </Text>
-          <Text style={styles.notifDesc}>인생샷을 남기기 좋은 탁 트인 뷰입니다.</Text>
+          <Text style={styles.notifDesc}>
+            인생샷을 남기기 좋은 탁 트인 뷰입니다.
+          </Text>
         </View>
-        {/* 닫기 버튼 */}
-        <TouchableOpacity onPress={() => setSnsSpot(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <TouchableOpacity
+          onPress={() => setSnsSpot(false)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
           <Ionicons name="eye-off-outline" size={18} color="#9ca3af" />
         </TouchableOpacity>
       </Animated.View>
 
-      {/* ── 코스 메타 뱃지 (우측 중하단 플로팅) ── */}
+      {/* ── 코스 메타 뱃지 ── */}
       <View style={styles.metaBadgeGroup}>
         <View style={styles.metaBadge}>
           <Ionicons name="location-outline" size={12} color="#6b7280" />
-          <Text style={styles.metaBadgeText}>{distance}</Text>
+          <Text style={styles.metaBadgeText}>{remainingDist.toFixed(2)}km</Text>
         </View>
         <View style={styles.metaBadge}>
           <Ionicons name="trending-up-outline" size={12} color="#3b82f6" />
-          <Text style={[styles.metaBadgeText, { color: '#2563eb' }]}>{elevation}</Text>
+          <Text style={[styles.metaBadgeText, { color: "#2563eb" }]}>
+            {elevation}
+          </Text>
         </View>
-      </View>
-
-      {/* ── 위치 마커 ── */}
-      <View style={styles.centerMarker} pointerEvents="none">
-        <Animated.View style={[styles.markerPulse, { transform: [{ scale: markerScale }] }]} />
-        <View style={styles.markerDot} />
       </View>
 
       {/* ── 하단 대시보드 ── */}
       <Animated.View
-        style={[styles.dashboard, { transform: [{ translateY: dashboardTransY }] }]}
+        style={[
+          styles.dashboard,
+          { transform: [{ translateY: dashboardTransY }] },
+        ]}
       >
-        {/* ── 토글 컨트롤 바 ── */}
         <View style={styles.toggleBar}>
-          {/* 동적 분석 토글 */}
           <View style={styles.toggleItem}>
-            <View style={[
-              styles.toggleIconWrap,
-              { backgroundColor: dynamicAnalysis ? '#f0fdf4' : '#f3f4f6' },
-            ]}>
+            <View
+              style={[
+                styles.toggleIconWrap,
+                { backgroundColor: dynamicAnalysis ? "#f0fdf4" : "#f3f4f6" },
+              ]}
+            >
               <Ionicons
                 name="pulse"
                 size={15}
-                color={dynamicAnalysis ? '#16a34a' : '#9ca3af'}
+                color={dynamicAnalysis ? "#16a34a" : "#9ca3af"}
               />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[
-                styles.toggleLabel,
-                { color: dynamicAnalysis ? '#1f2937' : '#9ca3af' },
-              ]}>
+              <Text
+                style={[
+                  styles.toggleLabel,
+                  { color: dynamicAnalysis ? "#1f2937" : "#9ca3af" },
+                ]}
+              >
                 동적 분석
               </Text>
             </View>
@@ -234,26 +744,27 @@ export default function LiveMapScreen() {
               activeColor="#22c55e"
             />
           </View>
-
           <View style={styles.toggleDivider} />
-
-          {/* SNS 조망점 토글 */}
           <View style={styles.toggleItem}>
-            <View style={[
-              styles.toggleIconWrap,
-              { backgroundColor: snsSpot ? '#faf5ff' : '#f3f4f6' },
-            ]}>
+            <View
+              style={[
+                styles.toggleIconWrap,
+                { backgroundColor: snsSpot ? "#faf5ff" : "#f3f4f6" },
+              ]}
+            >
               <Ionicons
                 name="camera"
                 size={15}
-                color={snsSpot ? '#9333ea' : '#9ca3af'}
+                color={snsSpot ? "#9333ea" : "#9ca3af"}
               />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[
-                styles.toggleLabel,
-                { color: snsSpot ? '#1f2937' : '#9ca3af' },
-              ]}>
+              <Text
+                style={[
+                  styles.toggleLabel,
+                  { color: snsSpot ? "#1f2937" : "#9ca3af" },
+                ]}
+              >
                 SNS 조망점
               </Text>
             </View>
@@ -265,70 +776,108 @@ export default function LiveMapScreen() {
           </View>
         </View>
 
-        {/* ── 구분선 ── */}
         <View style={styles.divider} />
 
-        {/* ── 동적 분석 ON: 전체 메트릭 패널 ── */}
         {dynamicAnalysis ? (
           <Animated.View style={{ opacity: analysisOpacity }}>
-            {/* ETA */}
             <View style={styles.dashboardTop}>
               <View>
                 <View style={styles.liveRow}>
                   <View style={styles.liveDot} />
-                  <Text style={styles.liveText}>실시간 동적 분석 중</Text>
+                  <Text style={styles.liveText}>실시간 현위치 분석 중</Text>
                 </View>
                 <Text style={styles.etaNumber}>
-                  45<Text style={styles.etaUnit}>분 남음</Text>
+                  {dynamicEta}
+                  <Text style={styles.etaUnit}>분 남음</Text>
                 </Text>
               </View>
-              <View style={{ alignItems: 'flex-end' }}>
+              <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.distLabel}>잔여 거리</Text>
-                <Text style={styles.distValue}>1.2km</Text>
+                <Text style={styles.distValue}>
+                  {remainingDist.toFixed(2)}km
+                </Text>
               </View>
             </View>
 
-            {/* 3분할 지표 */}
             <View style={styles.metricsRow}>
-              <View style={[styles.metricBox, { backgroundColor: '#f9fafb' }]}>
-                <Text style={[styles.metricBoxLabel, { color: '#6b7280' }]}>현재 페이스</Text>
-                <Text style={[styles.metricBoxValue, { color: '#111827' }]}>
-                  3.2<Text style={styles.metricBoxUnit}> km/h</Text>
+              <View style={[styles.metricBox, { backgroundColor: "#f9fafb" }]}>
+                <Text style={[styles.metricBoxLabel, { color: "#6b7280" }]}>
+                  현재 페이스
+                </Text>
+                <Text style={[styles.metricBoxValue, { color: "#111827" }]}>
+                  {currentPace.toFixed(1)}
+                  <Text style={styles.metricBoxUnit}> km/h</Text>
                 </Text>
               </View>
-              <View style={[styles.metricBox, { backgroundColor: '#fff7ed' }]}>
-                <Text style={[styles.metricBoxLabel, { color: '#ea580c' }]}>전방 경사도</Text>
-                <Text style={[styles.metricBoxValue, { color: '#ea580c' }]}>
-                  12<Text style={styles.metricBoxUnit}> %</Text>
+              <View style={[styles.metricBox, { backgroundColor: "#fff7ed" }]}>
+                <Text style={[styles.metricBoxLabel, { color: "#ea580c" }]}>
+                  현재 경사도
+                </Text>
+                <Text style={[styles.metricBoxValue, { color: "#ea580c" }]}>
+                  {currentSlope}
+                  <Text style={styles.metricBoxUnit}> %</Text>
                 </Text>
               </View>
-              <View style={[styles.metricBox, { backgroundColor: '#eff6ff' }]}>
-                <Text style={[styles.metricBoxLabel, { color: '#2563eb' }]}>예상 고도</Text>
-                <Text style={[styles.metricBoxValue, { color: '#2563eb' }]}>
-                  340<Text style={styles.metricBoxUnit}> m</Text>
+              <View style={[styles.metricBox, { backgroundColor: "#eff6ff" }]}>
+                <Text style={[styles.metricBoxLabel, { color: "#2563eb" }]}>
+                  심박수
+                </Text>
+                <Text style={[styles.metricBoxValue, { color: "#2563eb" }]}>
+                  {Math.round(heartRate)}
+                  <Text style={styles.metricBoxUnit}> bpm</Text>
                 </Text>
               </View>
             </View>
 
-            {/* 정보 박스 */}
             <View style={styles.infoBox}>
-              <Ionicons name="information-circle-outline" size={16} color="#9ca3af" />
+              <Ionicons
+                name="information-circle-outline"
+                size={16}
+                color="#9ca3af"
+              />
               <Text style={styles.infoText}>
-                회원님의 심박수(72bpm)와 전방의 완만한 경사도(12%)를 반영하여{' '}
-                <Text style={styles.infoTextBold}>기존 소요 시간 대비 10분 단축된 </Text>
-                도착 시간을 안내합니다.
+                회원님의 <Text style={styles.infoTextBold}>현위치</Text>에서
+                심박수({Math.round(heartRate)}bpm)와 페이스(
+                {currentPace.toFixed(1)}km/h)를 반영하여{" "}
+                <Text style={styles.infoTextBold}>실제 알고리즘(Tobler) </Text>
+                에 따른 도착 시간을 실시간으로 계산합니다.{" "}
+                {timeSaved > 0 && (
+                  <Text style={styles.infoTextBold}>
+                    (기존 대비 {timeSaved}분 단축)
+                  </Text>
+                )}
               </Text>
             </View>
+
+            <TouchableOpacity
+              style={[
+                styles.saveRecordButton,
+                savingRecord && styles.saveRecordButtonDisabled,
+              ]}
+              activeOpacity={0.86}
+              onPress={handleSaveHikingRecord}
+              disabled={savingRecord}
+            >
+              {savingRecord ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <Ionicons name="checkmark-circle" size={18} color="#ffffff" />
+              )}
+              <Text style={styles.saveRecordButtonText}>
+                {savingRecord ? "기록 저장 중" : "산행 기록 저장"}
+              </Text>
+            </TouchableOpacity>
           </Animated.View>
         ) : (
-          /* ── 동적 분석 OFF: 미니 상태 안내 ── */
           <View style={styles.analysisOffState}>
             <View style={styles.analysisOffIcon}>
               <Ionicons name="eye-off-outline" size={22} color="#9ca3af" />
             </View>
-            <Text style={styles.analysisOffTitle}>동적 분석이 꺼져 있습니다</Text>
+            <Text style={styles.analysisOffTitle}>
+              동적 분석이 꺼져 있습니다
+            </Text>
             <Text style={styles.analysisOffSub}>
-              위 토글을 켜면 실시간 페이스·경사도 분석이 시작됩니다.
+              위 토글을 켜면 현위치 기반 페이스·경사도 분석이 시작됩니다.
             </Text>
           </View>
         )}
@@ -338,163 +887,288 @@ export default function LiveMapScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#111827' },
-  mapImage: { ...StyleSheet.absoluteFillObject, opacity: 0.65 },
-  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,15,30,0.35)' },
-
-  /* 상단 바 */
+  container: { flex: 1, backgroundColor: "#111827" },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(10,15,30,0.15)",
+  },
   topBar: {
-    position: 'absolute', left: 0, right: 0,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 20, zIndex: 20, gap: 12,
+    position: "absolute",
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    zIndex: 20,
+    gap: 12,
   },
   routeLabel: {
     flex: 1,
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.85)",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.1)",
     gap: 8,
   },
   routeLabelSub: {
-    fontSize: 10, color: 'rgba(255,255,255,0.6)', fontWeight: '500',
+    fontSize: 10,
+    color: "#6b7280",
+    fontWeight: "500",
     marginBottom: 1,
   },
-  routeLabelText: { fontSize: 13, color: '#ffffff', fontWeight: '700' },
+  routeLabelText: { fontSize: 13, color: "#111827", fontWeight: "700" },
   sosButton: {
-    width: 48, height: 48, backgroundColor: '#ef4444', borderRadius: 24,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: '#f87171',
-    elevation: 8, shadowColor: '#ef4444',
-    shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 8,
+    width: 48,
+    height: 48,
+    backgroundColor: "#ef4444",
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#f87171",
+    elevation: 8,
+    shadowColor: "#ef4444",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
     flexShrink: 0,
   },
-
-  /* SNS 알림 카드 */
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 30,
+  },
+  loadingText: { color: "#ffffff", marginTop: 12, fontWeight: "600" },
   notifCard: {
-    position: 'absolute', left: 20, right: 20,
-    backgroundColor: 'rgba(255,255,255,0.97)',
-    borderRadius: 20, padding: 14,
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    zIndex: 20, elevation: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.15, shadowRadius: 12,
+    position: "absolute",
+    left: 20,
+    right: 20,
+    backgroundColor: "rgba(255,255,255,0.97)",
+    borderRadius: 20,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    zIndex: 20,
+    elevation: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
   },
-  notifCardHidden: { pointerEvents: 'none' },
+  notifCardHidden: { pointerEvents: "none" },
   notifIconWrap: {
-    width: 44, height: 44, backgroundColor: '#f3e8ff',
-    borderRadius: 13, alignItems: 'center', justifyContent: 'center',
+    width: 44,
+    height: 44,
+    backgroundColor: "#f3e8ff",
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  notifTopRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
-  aiTag: { backgroundColor: '#f3e8ff', borderRadius: 99, paddingHorizontal: 8, paddingVertical: 2 },
-  aiTagText: { fontSize: 11, fontWeight: '700', color: '#9333ea' },
-  notifDist: { fontSize: 11, color: '#9ca3af', fontWeight: '500' },
-  notifTitle: { fontSize: 13, fontWeight: '700', color: '#111827' },
-  notifDesc: { fontSize: 11, color: '#6b7280', marginTop: 1 },
-
-  /* 코스 메타 뱃지 */
+  notifTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 2,
+  },
+  aiTag: {
+    backgroundColor: "#f3e8ff",
+    borderRadius: 99,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  aiTagText: { fontSize: 11, fontWeight: "700", color: "#9333ea" },
+  notifDist: { fontSize: 11, color: "#9ca3af", fontWeight: "500" },
+  notifTitle: { fontSize: 13, fontWeight: "700", color: "#111827" },
+  notifDesc: { fontSize: 11, color: "#6b7280", marginTop: 1 },
   metaBadgeGroup: {
-    position: 'absolute', right: 16, bottom: 320,
-    flexDirection: 'column', gap: 8, zIndex: 15,
+    position: "absolute",
+    right: 16,
+    bottom: 340,
+    flexDirection: "column",
+    gap: 8,
+    zIndex: 15,
   },
   metaBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: 'rgba(255,255,255,0.92)',
-    borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6,
-    elevation: 4, shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
-  metaBadgeText: { fontSize: 12, fontWeight: '600', color: '#374151' },
-
-  /* 위치 마커 */
-  centerMarker: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
-  markerPulse: {
-    position: 'absolute', width: 64, height: 64, borderRadius: 32,
-    backgroundColor: 'rgba(59,130,246,0.22)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.4)',
-  },
-  markerDot: {
-    width: 18, height: 18, borderRadius: 9,
-    backgroundColor: '#3b82f6', borderWidth: 2.5, borderColor: '#ffffff',
-    elevation: 6, shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4,
-  },
-
-  /* 대시보드 */
+  metaBadgeText: { fontSize: 12, fontWeight: "600", color: "#374151" },
   dashboard: {
-    position: 'absolute', bottom: 16, left: 14, right: 14,
-    backgroundColor: '#ffffff', borderRadius: 28,
-    zIndex: 20, elevation: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 16,
-    overflow: 'hidden',
+    position: "absolute",
+    bottom: 16,
+    left: 14,
+    right: 14,
+    backgroundColor: "#ffffff",
+    borderRadius: 28,
+    zIndex: 20,
+    elevation: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    overflow: "hidden",
   },
-
-  /* 토글 바 */
   toggleBar: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingTop: 16, paddingBottom: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
     gap: 0,
   },
-  toggleItem: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  toggleItem: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },
   toggleIconWrap: {
-    width: 30, height: 30, borderRadius: 9,
-    alignItems: 'center', justifyContent: 'center',
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  toggleLabel: { fontSize: 12, fontWeight: '700' },
+  toggleLabel: { fontSize: 12, fontWeight: "700" },
   toggleTrack: {
-    width: 40, height: 22, borderRadius: 11,
-    justifyContent: 'center', paddingHorizontal: 2,
+    width: 40,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: "center",
+    paddingHorizontal: 2,
   },
   toggleThumb: {
-    width: 18, height: 18, borderRadius: 9,
-    backgroundColor: '#ffffff',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#ffffff",
     elevation: 2,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
   },
-  toggleDivider: { width: 1, height: 36, backgroundColor: '#f3f4f6', marginHorizontal: 8 },
-
-  divider: { height: 1, backgroundColor: '#f3f4f6', marginHorizontal: 0 },
-
-  /* 동적 분석 패널 */
+  toggleDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: "#f3f4f6",
+    marginHorizontal: 8,
+  },
+  divider: { height: 1, backgroundColor: "#f3f4f6", marginHorizontal: 0 },
   dashboardTop: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end',
-    paddingHorizontal: 20, paddingTop: 16, marginBottom: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    marginBottom: 16,
   },
-  liveRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
-  liveText: { fontSize: 11, fontWeight: '700', color: '#16a34a', letterSpacing: 0.3 },
-  etaNumber: { fontSize: 34, fontWeight: '800', color: '#111827' },
-  etaUnit: { fontSize: 18, fontWeight: '500', color: '#6b7280' },
-  distLabel: { fontSize: 12, color: '#9ca3af', fontWeight: '500', marginBottom: 4 },
-  distValue: { fontSize: 22, fontWeight: '700', color: '#1f2937' },
-
-  metricsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, marginBottom: 14 },
+  liveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22c55e" },
+  liveText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#16a34a",
+    letterSpacing: 0.3,
+  },
+  etaNumber: { fontSize: 34, fontWeight: "800", color: "#111827" },
+  etaUnit: { fontSize: 18, fontWeight: "500", color: "#6b7280" },
+  distLabel: {
+    fontSize: 12,
+    color: "#9ca3af",
+    fontWeight: "500",
+    marginBottom: 4,
+  },
+  distValue: { fontSize: 22, fontWeight: "700", color: "#1f2937" },
+  metricsRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+    marginBottom: 14,
+  },
   metricBox: {
-    flex: 1, borderRadius: 14, paddingVertical: 11, paddingHorizontal: 6,
-    alignItems: 'center', borderWidth: 1, borderColor: '#f3f4f6',
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 6,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
   },
-  metricBoxLabel: { fontSize: 10, fontWeight: '500', marginBottom: 4, textAlign: 'center' },
-  metricBoxValue: { fontSize: 14, fontWeight: '700', textAlign: 'center' },
-  metricBoxUnit: { fontSize: 10, fontWeight: '400' },
-
+  metricBoxLabel: {
+    fontSize: 10,
+    fontWeight: "500",
+    marginBottom: 4,
+    textAlign: "center",
+  },
+  metricBoxValue: { fontSize: 14, fontWeight: "700", textAlign: "center" },
+  metricBoxUnit: { fontSize: 10, fontWeight: "400" },
   infoBox: {
-    backgroundColor: '#f9fafb', borderRadius: 14,
-    padding: 12, marginHorizontal: 16, marginBottom: 16,
-    flexDirection: 'row', gap: 8, alignItems: 'flex-start',
-    borderWidth: 1, borderColor: '#f3f4f6',
+    backgroundColor: "#f9fafb",
+    borderRadius: 14,
+    padding: 12,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-start",
+    borderWidth: 1,
+    borderColor: "#f3f4f6",
   },
-  infoText: { flex: 1, fontSize: 11, color: '#6b7280', lineHeight: 18 },
-  infoTextBold: { color: '#1f2937', fontWeight: '600' },
-
-  /* 동적 분석 OFF 상태 */
-  analysisOffState: {
-    alignItems: 'center', paddingVertical: 24, gap: 6,
+  infoText: { flex: 1, fontSize: 11, color: "#6b7280", lineHeight: 18 },
+  infoTextBold: { color: "#1f2937", fontWeight: "600" },
+  saveRecordButton: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: "#16a34a",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
   },
+  saveRecordButtonDisabled: {
+    opacity: 0.72,
+  },
+  saveRecordButtonText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  analysisOffState: { alignItems: "center", paddingVertical: 24, gap: 6 },
   analysisOffIcon: {
-    width: 44, height: 44, borderRadius: 13,
-    backgroundColor: '#f3f4f6',
-    alignItems: 'center', justifyContent: 'center', marginBottom: 4,
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
   },
-  analysisOffTitle: { fontSize: 14, fontWeight: '600', color: '#6b7280' },
-  analysisOffSub: { fontSize: 12, color: '#9ca3af', textAlign: 'center', paddingHorizontal: 24 },
+  analysisOffTitle: { fontSize: 14, fontWeight: "600", color: "#6b7280" },
+  analysisOffSub: {
+    fontSize: 12,
+    color: "#9ca3af",
+    textAlign: "center",
+    paddingHorizontal: 24,
+  },
 });

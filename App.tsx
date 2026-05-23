@@ -12,14 +12,24 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
-import { Platform, StatusBar } from 'react-native';
+import {
+  ActivityIndicator,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
+import { AuthProvider, needsProfileSetup, useAuth } from './contexts/AuthContext';
 import AchievementScreen from './screens/AchievementScreen';
 import AllRoutesScreen from './screens/AllRoutesScreen';
 import HomeScreen from './screens/HomeScreen';
+import LoginScreen from './screens/LoginScreen';
 import LiveMapScreen from './screens/LiveMapScreen';
 import MountainCoursesScreen from './screens/MountainCoursesScreen';
 import ProfileScreen from './screens/ProfileScreen';
+import ProfileSetupScreen from './screens/ProfileSetupScreen';
 import RouteDetailScreen from './screens/RouteDetailScreen';
 import SafetyScreen from './screens/SafetyScreen';
 
@@ -108,10 +118,9 @@ function MainTabs() {
 }
 
 /* ── 루트 스택 네비게이터 ── */
-export default function App() {
+function AppNavigator() {
   return (
     <NavigationContainer>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen name="MainTabs" component={MainTabs} />
         <Stack.Screen
@@ -138,3 +147,46 @@ export default function App() {
     </NavigationContainer>
   );
 }
+
+function AuthLoadingScreen() {
+  return (
+    <View style={styles.loadingScreen}>
+      <ActivityIndicator size="large" color="#16a34a" />
+      <Text style={styles.loadingText}>로그인 정보를 확인하는 중입니다</Text>
+    </View>
+  );
+}
+
+function AppContent() {
+  const { isLoading, user } = useAuth();
+
+  if (isLoading) return <AuthLoadingScreen />;
+  if (!user) return <LoginScreen />;
+  if (needsProfileSetup(user)) return <ProfileSetupScreen />;
+
+  return <AppNavigator />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+      <AppContent />
+    </AuthProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f9fafb',
+    gap: 12,
+  },
+  loadingText: {
+    color: '#6b7280',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+});
