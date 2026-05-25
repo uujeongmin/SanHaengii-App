@@ -235,7 +235,7 @@ export default function LiveMapScreen() {
         let rows: any[] = [];
         if (mountainName) {
           const resp = await fetch(
-            `${BASE_URL}/data/photo_spots/filter?${params.toString()}`,
+            `${BASE_URL}/data/Photo_Spots/filter?${params.toString()}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -252,7 +252,7 @@ export default function LiveMapScreen() {
           rows = Array.isArray(data) ? data : (data.rows ?? data.data ?? []);
         } else {
           const resp = await fetch(
-            `${BASE_URL}/data/photo_spots?${params.toString()}`,
+            `${BASE_URL}/data/Photo_Spots?${params.toString()}`,
           );
           if (!resp.ok) {
             const text = await resp.text().catch(() => "");
