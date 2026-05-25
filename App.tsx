@@ -7,32 +7,35 @@
  *   npx expo install @expo/vector-icons
  */
 
-import { Ionicons } from '@expo/vector-icons';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import React from 'react';
+import { Ionicons } from "@expo/vector-icons";
+import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { NavigationContainer } from "@react-navigation/native";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import React from "react";
 import {
   ActivityIndicator,
   Platform,
   StatusBar,
   StyleSheet,
   Text,
-  View,
-  Image,
-} from 'react-native';
+  View
+} from "react-native";
 
-import { AuthProvider, needsProfileSetup, useAuth } from './contexts/AuthContext';
-import AchievementScreen from './screens/AchievementScreen';
-import AllRoutesScreen from './screens/AllRoutesScreen';
-import HomeScreen from './screens/HomeScreen';
-import LoginScreen from './screens/LoginScreen';
-import LiveMapScreen from './screens/LiveMapScreen';
-import MountainCoursesScreen from './screens/MountainCoursesScreen';
-import ProfileScreen from './screens/ProfileScreen';
-import ProfileSetupScreen from './screens/ProfileSetupScreen';
-import RouteDetailScreen from './screens/RouteDetailScreen';
-import SafetyScreen from './screens/SafetyScreen';
+import {
+  AuthProvider,
+  needsProfileSetup,
+  useAuth,
+} from "./contexts/AuthContext";
+import AchievementScreen from "./screens/AchievementScreen";
+import AllRoutesScreen from "./screens/AllRoutesScreen";
+import HomeScreen from "./screens/HomeScreen";
+import LiveMapScreen from "./screens/LiveMapScreen";
+import LoginScreen from "./screens/LoginScreen";
+import MountainCoursesScreen from "./screens/MountainCoursesScreen";
+import ProfileScreen from "./screens/ProfileScreen";
+import ProfileSetupScreen from "./screens/ProfileSetupScreen";
+import RouteDetailScreen from "./screens/RouteDetailScreen";
+import SafetyScreen from "./screens/SafetyScreen";
 
 /* ── 코스 파라미터 타입 (홈 → 내비게이션으로 전달) ── */
 export interface CourseParams {
@@ -47,11 +50,13 @@ export interface CourseParams {
 
 /* ── 네비게이션 타입 ── */
 export type RootStackParamList = {
-  MainTabs: { screen?: keyof RootTabParamList; params?: CourseParams } | undefined;
+  MainTabs:
+    | { screen?: keyof RootTabParamList; params?: CourseParams }
+    | undefined;
   AllRoutes: undefined;
   MountainCourses: { mountainId: string };
   Profile: undefined;
-  RouteDetail: { recordId: string }; 
+  RouteDetail: { recordId: string };
 };
 
 export type RootTabParamList = {
@@ -71,31 +76,22 @@ function MainTabs() {
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: '#ffffff',
-          borderTopColor: '#e5e7eb',
+          backgroundColor: "#ffffff",
+          borderTopColor: "#e5e7eb",
           borderTopWidth: 1,
-          paddingBottom: Platform.OS === 'ios' ? 20 : 8,
+          paddingBottom: Platform.OS === "ios" ? 20 : 8,
           paddingTop: 8,
-          height: Platform.OS === 'ios' ? 84 : 68,
+          height: Platform.OS === "ios" ? 84 : 68,
           elevation: 20,
-          shadowColor: '#000000',
+          shadowColor: "#000000",
           shadowOffset: { width: 0, height: -4 },
           shadowOpacity: 0.05,
           shadowRadius: 8,
         },
-        tabBarActiveTintColor: '#16a34a',
-        tabBarInactiveTintColor: '#9ca3af',
+        tabBarActiveTintColor: "#16a34a",
+        tabBarInactiveTintColor: "#9ca3af",
         tabBarLabelStyle: { fontSize: 10, marginTop: 2 },
         tabBarIcon: ({ color, size, focused }) => {
-          if (route.name === '내비게이션') {
-            return (
-              <Image
-                source={require('./assets/images/photo_spot_marker.png')}
-                style={{ width: size, height: size, tintColor: color }}
-                resizeMode="contain"
-              />
-            );
-          }
           const icons: Record<
             string,
             {
@@ -103,10 +99,10 @@ function MainTabs() {
               filled: keyof typeof Ionicons.glyphMap;
             }
           > = {
-            홈: { outline: 'home-outline', filled: 'home' },
-            내비게이션: { outline: 'map-outline', filled: 'map' },
-            성취도: { outline: 'trophy-outline', filled: 'trophy' },
-            안전설정: { outline: 'shield-outline', filled: 'shield' },
+            홈: { outline: "home-outline", filled: "home" },
+            내비게이션: { outline: "map-outline", filled: "map" },
+            성취도: { outline: "trophy-outline", filled: "trophy" },
+            안전설정: { outline: "shield-outline", filled: "shield" },
           };
           const icon = icons[route.name];
           return (
@@ -136,22 +132,22 @@ function AppNavigator() {
         <Stack.Screen
           name="AllRoutes"
           component={AllRoutesScreen}
-          options={{ animation: 'slide_from_right' }}
+          options={{ animation: "slide_from_right" }}
         />
         <Stack.Screen
           name="MountainCourses"
           component={MountainCoursesScreen}
-          options={{ animation: 'slide_from_right' }}
+          options={{ animation: "slide_from_right" }}
         />
         <Stack.Screen
           name="Profile"
           component={ProfileScreen}
-          options={{ animation: 'slide_from_right' }}
+          options={{ animation: "slide_from_right" }}
         />
         <Stack.Screen
           name="RouteDetail"
           component={RouteDetailScreen}
-          options={{ animation: 'slide_from_right' }}
+          options={{ animation: "slide_from_right" }}
         />
       </Stack.Navigator>
     </NavigationContainer>
@@ -189,14 +185,14 @@ export default function App() {
 const styles = StyleSheet.create({
   loadingScreen: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f9fafb',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f9fafb",
     gap: 12,
   },
   loadingText: {
-    color: '#6b7280',
+    color: "#6b7280",
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
   },
 });

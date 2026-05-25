@@ -232,7 +232,10 @@ export default function SafetyScreen() {
       );
     } catch (error) {
       console.error("[Test] Data injection failed:", error);
-      Alert.alert("에러", "health_data_temp 테이블에 이상 데이터를 저장하지 못했습니다.");
+      Alert.alert(
+        "에러",
+        "health_data_temp 테이블에 이상 데이터를 저장하지 못했습니다.",
+      );
     }
   };
 
@@ -273,8 +276,8 @@ export default function SafetyScreen() {
       }, 5000);
 
       Alert.alert(
-        "모니터링 시작",
-        "서버와 통신하며 실시간 데이터를 분석합니다.",
+        "실시간 모니터링 시작",
+        "스마트워치로 실시간 데이터를 분석합니다.",
       );
     }
     return () => clearInterval(interval);
