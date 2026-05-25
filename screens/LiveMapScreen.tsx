@@ -690,13 +690,13 @@ export default function LiveMapScreen() {
           photoSpots.length > 0 &&
           photoSpots.map((spot) => (
             <NaverMapMarkerOverlay
-              key={`sns-spot-${spot.id}`}
+              key={`sns-spot-${spot.spot}`}
               latitude={spot.latitude}
               longitude={spot.longitude}
               width={28}
               height={28}
               image={{ symbol: "camera" }}
-              caption={{ text: spot.title ?? "포토스팟" }}
+              caption={{ text: spot.address ?? "포토스팟" }}
               zIndex={12}
             />
           ))}
