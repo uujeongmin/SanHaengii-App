@@ -27,7 +27,7 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, BASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY, type UnifiedMountainNode } from "../data/api";
+import { apiService, BASE_URL, type UnifiedMountainNode } from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
 if (
@@ -223,84 +223,41 @@ export default function LiveMapScreen() {
     }
   }, [courseId]);
 
-  // 사진(포토) 스팟 로드 (SNS 인기 조망점)
+  // 사진(포토) 스팟 로드 (마운드 관계없이 전체 표시)
   useEffect(() => {
     let mounted = true;
     async function loadPhotoSpots() {
       try {
         const params = new URLSearchParams({
-          select: "id,lat,lng,title",
+          select: "id,lat,lng,address,photo_spot_id",
           limit: "500",
         });
-        let rows: any[] = [];
-        if (mountainName) {
-          const resp = await fetch(
-            `${BASE_URL}/data/Photo_Spots/filter?${params.toString()}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ mountain_name: mountainName }),
-            },
-          );
-          if (!resp.ok) {
-            const text = await resp.text().catch(() => "");
-            throw new Error(
-              `Failed to fetch photo spots (status ${resp.status}): ${text}`,
-            );
-          }
-          const data = await resp.json();
-          rows = Array.isArray(data) ? data : (data.rows ?? data.data ?? []);
-        } else {
-          const resp = await fetch(
-            `${BASE_URL}/data/Photo_Spots?${params.toString()}`,
-          );
-          if (!resp.ok) {
-            const text = await resp.text().catch(() => "");
-            throw new Error(
-              `Failed to fetch photo spots (status ${resp.status}): ${text}`,
-            );
-          }
-          rows = await resp.json();
+
+        const resp = await fetch(`${BASE_URL}/data/Photo_Spots?${params.toString()}`);
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          throw new Error(`Failed to fetch photo spots (status ${resp.status}): ${text}`);
         }
+
+        const data = await resp.json();
+        const rows: any[] = Array.isArray(data) ? data : (data.rows ?? data.data ?? []);
+
         if (!mounted) return;
+
         const spots = (rows || [])
           .map((r: any) => ({
             spot: r.id ?? r.photo_spot_id ?? `${r.lat}-${r.lng}`,
             latitude: Number(r.lat ?? r.latitude),
             longitude: Number(r.lng ?? r.longitude),
-            address: r.address ?? r.location ?? "포토스팟",
+            address: r.address ?? r.location ?? r.title ?? "포토스팟",
           }))
-          .filter(
-            (s: any) =>
-              Number.isFinite(s.latitude) && Number.isFinite(s.longitude),
-          );
+          .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+
         setPhotoSpots(spots);
       } catch (e) {
         console.error("[LiveMap] Failed to load photo spots:", e);
-        // 서버 500 등 내부 에러가 발생할 경우 간단한 GET으로 폴백 시도
-        try {
-          const fallbackResp = await fetch(`${BASE_URL}/data/Photo_Spots?limit=500`);
-          if (fallbackResp.ok) {
-            const fallbackRows = await fallbackResp.json();
-            const spots = (fallbackRows || [])
-              .map((r: any) => ({
-                spot: r.id ?? r.photo_spot_id ?? `${r.lat}-${r.lng}`,
-                latitude: Number(r.lat ?? r.latitude),
-                longitude: Number(r.lng ?? r.longitude),
-                address: r.address ?? r.location ?? "포토스팟",
-              }))
-              .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
-            setPhotoSpots(spots);
-            return;
-          } else {
-            const txt = await fallbackResp.text().catch(() => "");
-            console.error("[LiveMap] Fallback fetch failed:", fallbackResp.status, txt);
-          }
-        } catch (fe) {
-          console.error("[LiveMap] Fallback fetch error:", fe);
-        }
 
-        // 백엔드/폴백이 모두 실패하면 Supabase REST API에서 직접 읽어보기
+        // Supabase REST API에서 직접 읽어보기 (마운드 관계없이 전체 로드)
         if (typeof SUPABASE_URL === "string" && SUPABASE_URL && typeof SUPABASE_ANON_KEY === "string" && SUPABASE_ANON_KEY) {
           try {
             const sbUrl = `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/Photo_Spots?select=id,lat,lng,address,photo_spot_id&limit=500`;
@@ -318,7 +275,7 @@ export default function LiveMapScreen() {
                   spot: r.id ?? r.photo_spot_id ?? `${r.lat}-${r.lng}`,
                   latitude: Number(r.lat ?? r.latitude),
                   longitude: Number(r.lng ?? r.longitude),
-                  address: r.address ?? r.location ?? "포토스팟",
+                  address: r.address ?? r.location ?? r.title ?? "포토스팟",
                 }))
                 .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
               setPhotoSpots(spots);
@@ -340,7 +297,7 @@ export default function LiveMapScreen() {
     return () => {
       mounted = false;
     };
-  }, [mountainName]);
+  }, []);
 
   useEffect(() => {
     const normalizedMountainName = mountainName.trim();
@@ -751,8 +708,8 @@ export default function LiveMapScreen() {
               longitude={spot.longitude}
               width={28}
               height={28}
-              image={require("../assets/images/favicon.png")}
-              caption={{ text: spot.address ?? "포토스팟" }}
+              image={"camera"}
+              caption={{ text: spot.title ?? "포토스팟" }}
               zIndex={12}
             />
           ))}
