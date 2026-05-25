@@ -27,7 +27,7 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, BASE_URL, type UnifiedMountainNode } from "../data/api";
+import { apiService, BASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY, type UnifiedMountainNode } from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
 if (
@@ -298,6 +298,39 @@ export default function LiveMapScreen() {
           }
         } catch (fe) {
           console.error("[LiveMap] Fallback fetch error:", fe);
+        }
+
+        // 백엔드/폴백이 모두 실패하면 Supabase REST API에서 직접 읽어보기
+        if (typeof SUPABASE_URL === "string" && SUPABASE_URL && typeof SUPABASE_ANON_KEY === "string" && SUPABASE_ANON_KEY) {
+          try {
+            const sbUrl = `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/Photo_Spots?select=id,lat,lng,address,photo_spot_id&limit=500`;
+            const sbResp = await fetch(sbUrl, {
+              headers: {
+                apikey: SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+                Accept: "application/json",
+              },
+            });
+            if (sbResp.ok) {
+              const sbRows = await sbResp.json();
+              const spots = (sbRows || [])
+                .map((r: any) => ({
+                  spot: r.id ?? r.photo_spot_id ?? `${r.lat}-${r.lng}`,
+                  latitude: Number(r.lat ?? r.latitude),
+                  longitude: Number(r.lng ?? r.longitude),
+                  address: r.address ?? r.location ?? "포토스팟",
+                }))
+                .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+              setPhotoSpots(spots);
+              console.log("[LiveMap] Loaded photo spots from Supabase fallback, count:", spots.length);
+              return;
+            } else {
+              const txt = await sbResp.text().catch(() => "");
+              console.error("[LiveMap] Supabase fallback failed:", sbResp.status, txt);
+            }
+          } catch (se) {
+            console.error("[LiveMap] Supabase fallback error:", se);
+          }
         }
 
         setPhotoSpots([]);
