@@ -27,7 +27,7 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, type UnifiedMountainNode } from "../data/api";
+import { apiService, type UnifiedMountainNode, BASE_URL } from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
 if (
@@ -175,6 +175,12 @@ export default function LiveMapScreen() {
     longitude: 126.978,
   });
 
+  // SNS 인기 조망점(포토스팟) 상태
+  const [photoSpots, setPhotoSpots] = useState<
+    { id: string | number; latitude: number; longitude: number; title?: string }[]
+  >([]);
+
+
   // 정적 기준 시간 및 동적 실시간 시간
   const initialMinutes = parseTimeToMinutes(params?.time);
   const [staticEta, setStaticEta] = useState(initialMinutes);
@@ -215,6 +221,47 @@ export default function LiveMapScreen() {
       fetchRealAlgorithmData(courseId);
     }
   }, [courseId]);
+
+  // 사진(포토) 스팟 로드 (SNS 인기 조망점)
+  useEffect(() => {
+    let mounted = true;
+    async function loadPhotoSpots() {
+      try {
+        const params = new URLSearchParams({ select: "id,lat,lng,title", limit: "500" });
+        let rows: any[] = [];
+        if (mountainName) {
+          const resp = await fetch(`${BASE_URL}/data/photo_spots/filter?${params.toString()}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mountain_name: mountainName }),
+          });
+          if (!resp.ok) throw new Error("Failed to fetch photo spots");
+          const data = await resp.json();
+          rows = Array.isArray(data) ? data : data.rows ?? data.data ?? [];
+        } else {
+          const resp = await fetch(`${BASE_URL}/data/photo_spots?${params.toString()}`);
+          if (!resp.ok) throw new Error("Failed to fetch photo spots");
+          rows = await resp.json();
+        }
+        if (!mounted) return;
+        const spots = (rows || []).map((r: any) => ({
+          id: r.id ?? r.photo_spot_id ?? `${r.lat}-${r.lng}`,
+          latitude: Number(r.lat ?? r.latitude),
+          longitude: Number(r.lng ?? r.longitude),
+          title: r.title ?? r.name ?? "포토스팟",
+        })).filter((s:any)=>Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+        setPhotoSpots(spots);
+      } catch (e) {
+        console.error("[LiveMap] Failed to load photo spots:", e);
+        setPhotoSpots([]);
+      }
+    }
+    loadPhotoSpots();
+    return () => {
+      mounted = false;
+    };
+  }, [mountainName]);
+
 
   useEffect(() => {
     const normalizedMountainName = mountainName.trim();
@@ -614,6 +661,21 @@ export default function LiveMapScreen() {
             caption={{ text: "도착" }}
           />
         )}
+
+        {/* SNS 포토스팟 마커 (토글로 제어) */}
+        {snsSpot && photoSpots.length > 0 &&
+          photoSpots.map((spot) => (
+            <NaverMapMarkerOverlay
+              key={`sns-spot-${spot.id}`}
+              latitude={spot.latitude}
+              longitude={spot.longitude}
+              width={28}
+              height={28}
+              image={{ symbol: "camera" }}
+              caption={{ text: spot.title ?? "포토스팟" }}
+              zIndex={12}
+            />
+          ))}
       </NaverMapView>
 
       <View style={styles.overlay} pointerEvents="none" />
