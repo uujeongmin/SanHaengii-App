@@ -277,6 +277,29 @@ export default function LiveMapScreen() {
         setPhotoSpots(spots);
       } catch (e) {
         console.error("[LiveMap] Failed to load photo spots:", e);
+        // 서버 500 등 내부 에러가 발생할 경우 간단한 GET으로 폴백 시도
+        try {
+          const fallbackResp = await fetch(`${BASE_URL}/data/Photo_Spots?limit=500`);
+          if (fallbackResp.ok) {
+            const fallbackRows = await fallbackResp.json();
+            const spots = (fallbackRows || [])
+              .map((r: any) => ({
+                spot: r.id ?? r.photo_spot_id ?? `${r.lat}-${r.lng}`,
+                latitude: Number(r.lat ?? r.latitude),
+                longitude: Number(r.lng ?? r.longitude),
+                address: r.address ?? r.location ?? "포토스팟",
+              }))
+              .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+            setPhotoSpots(spots);
+            return;
+          } else {
+            const txt = await fallbackResp.text().catch(() => "");
+            console.error("[LiveMap] Fallback fetch failed:", fallbackResp.status, txt);
+          }
+        } catch (fe) {
+          console.error("[LiveMap] Fallback fetch error:", fe);
+        }
+
         setPhotoSpots([]);
       }
     }
