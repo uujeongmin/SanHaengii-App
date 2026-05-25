@@ -216,6 +216,13 @@ export interface UserBadge {
   earnedAt: string | null;
 }
 
+export interface PhotoSpot {
+  spot: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+}
+
 export interface LoginResponse {
   success: boolean;
   token: string;
@@ -1512,6 +1519,19 @@ export const apiService = {
       return await response.json();
     } catch (error) {
       console.error("[API] Error in getHealthData:", error);
+      throw error;
+    }
+  },
+
+  async getPhotoSpots(): Promise<PhotoSpot[]> {
+    try {
+      const rows = await fetchDataRows<PhotoSpot>("Photo_Spots", {
+        select: "spot,address,latitude,longitude",
+        limit: "500",
+      });
+      return rows;
+    } catch (error) {
+      console.error("[API] Error in getPhotoSpots:", error);
       throw error;
     }
   },
