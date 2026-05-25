@@ -27,7 +27,13 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, BASE_URL, type UnifiedMountainNode, SUPABASE_URL, SUPABASE_ANON_KEY } from "../data/api";
+import {
+  apiService,
+  BASE_URL,
+  SUPABASE_ANON_KEY,
+  SUPABASE_URL,
+  type UnifiedMountainNode,
+} from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
 if (
@@ -179,7 +185,7 @@ export default function LiveMapScreen() {
 
   // SNS 인기 조망점(포토스팟) 상태
   const [photoSpots, setPhotoSpots] = useState<
-    { spot: string; latitude: number; longitude: number; address: string }[]
+    { spot: string; latitude: number; longitude: number; title: string }[]
   >([]);
 
   // 정적 기준 시간 및 동적 실시간 시간
@@ -695,7 +701,7 @@ export default function LiveMapScreen() {
           longitude={currentLocation.longitude}
           width={24}
           height={24}
-          image={require("../assets/images/favicon.png")} // 임시 아이콘
+          image={require("../assets/images/photo_spot_marker.png")} // photo spot marker image
           caption={{ text: "현위치" }}
           subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
         />

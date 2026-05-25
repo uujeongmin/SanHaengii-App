@@ -19,6 +19,7 @@ import {
   StyleSheet,
   Text,
   View,
+  Image,
 } from 'react-native';
 
 import { AuthProvider, needsProfileSetup, useAuth } from './contexts/AuthContext';
@@ -86,6 +87,15 @@ function MainTabs() {
         tabBarInactiveTintColor: '#9ca3af',
         tabBarLabelStyle: { fontSize: 10, marginTop: 2 },
         tabBarIcon: ({ color, size, focused }) => {
+          if (route.name === '내비게이션') {
+            return (
+              <Image
+                source={require('./assets/images/photo_spot_marker.png')}
+                style={{ width: size, height: size, tintColor: color }}
+                resizeMode="contain"
+              />
+            );
+          }
           const icons: Record<
             string,
             {
