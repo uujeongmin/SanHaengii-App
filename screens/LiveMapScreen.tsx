@@ -244,7 +244,9 @@ export default function LiveMapScreen() {
           );
           if (!resp.ok) {
             const text = await resp.text().catch(() => "");
-            throw new Error(`Failed to fetch photo spots (status ${resp.status}): ${text}`);
+            throw new Error(
+              `Failed to fetch photo spots (status ${resp.status}): ${text}`,
+            );
           }
           const data = await resp.json();
           rows = Array.isArray(data) ? data : (data.rows ?? data.data ?? []);
@@ -254,7 +256,9 @@ export default function LiveMapScreen() {
           );
           if (!resp.ok) {
             const text = await resp.text().catch(() => "");
-            throw new Error(`Failed to fetch photo spots (status ${resp.status}): ${text}`);
+            throw new Error(
+              `Failed to fetch photo spots (status ${resp.status}): ${text}`,
+            );
           }
           rows = await resp.json();
         }
