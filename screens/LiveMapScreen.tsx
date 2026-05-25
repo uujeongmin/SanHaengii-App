@@ -695,7 +695,7 @@ export default function LiveMapScreen() {
               longitude={spot.longitude}
               width={28}
               height={28}
-              image={{ symbol: "camera" }}
+              image={require("../assets/images/favicon.png")}
               caption={{ text: spot.address ?? "포토스팟" }}
               zIndex={12}
             />
