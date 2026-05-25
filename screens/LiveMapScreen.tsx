@@ -27,7 +27,7 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, BASE_URL, type UnifiedMountainNode } from "../data/api";
+import { apiService, BASE_URL, type UnifiedMountainNode, SUPABASE_URL, SUPABASE_ANON_KEY } from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
 if (
@@ -233,14 +233,20 @@ export default function LiveMapScreen() {
           limit: "500",
         });
 
-        const resp = await fetch(`${BASE_URL}/data/Photo_Spots?${params.toString()}`);
+        const resp = await fetch(
+          `${BASE_URL}/data/Photo_Spots?${params.toString()}`,
+        );
         if (!resp.ok) {
           const text = await resp.text().catch(() => "");
-          throw new Error(`Failed to fetch photo spots (status ${resp.status}): ${text}`);
+          throw new Error(
+            `Failed to fetch photo spots (status ${resp.status}): ${text}`,
+          );
         }
 
         const data = await resp.json();
-        const rows: any[] = Array.isArray(data) ? data : (data.rows ?? data.data ?? []);
+        const rows: any[] = Array.isArray(data)
+          ? data
+          : (data.rows ?? data.data ?? []);
 
         if (!mounted) return;
 
@@ -251,14 +257,22 @@ export default function LiveMapScreen() {
             longitude: Number(r.lng ?? r.longitude),
             address: r.address ?? r.location ?? r.title ?? "포토스팟",
           }))
-          .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+          .filter(
+            (s: any) =>
+              Number.isFinite(s.latitude) && Number.isFinite(s.longitude),
+          );
 
         setPhotoSpots(spots);
       } catch (e) {
         console.error("[LiveMap] Failed to load photo spots:", e);
 
         // Supabase REST API에서 직접 읽어보기 (마운드 관계없이 전체 로드)
-        if (typeof SUPABASE_URL === "string" && SUPABASE_URL && typeof SUPABASE_ANON_KEY === "string" && SUPABASE_ANON_KEY) {
+        if (
+          typeof SUPABASE_URL === "string" &&
+          SUPABASE_URL &&
+          typeof SUPABASE_ANON_KEY === "string" &&
+          SUPABASE_ANON_KEY
+        ) {
           try {
             const sbUrl = `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/Photo_Spots?select=id,lat,lng,address,photo_spot_id&limit=500`;
             const sbResp = await fetch(sbUrl, {
@@ -277,13 +291,23 @@ export default function LiveMapScreen() {
                   longitude: Number(r.lng ?? r.longitude),
                   address: r.address ?? r.location ?? r.title ?? "포토스팟",
                 }))
-                .filter((s: any) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+                .filter(
+                  (s: any) =>
+                    Number.isFinite(s.latitude) && Number.isFinite(s.longitude),
+                );
               setPhotoSpots(spots);
-              console.log("[LiveMap] Loaded photo spots from Supabase fallback, count:", spots.length);
+              console.log(
+                "[LiveMap] Loaded photo spots from Supabase fallback, count:",
+                spots.length,
+              );
               return;
             } else {
               const txt = await sbResp.text().catch(() => "");
-              console.error("[LiveMap] Supabase fallback failed:", sbResp.status, txt);
+              console.error(
+                "[LiveMap] Supabase fallback failed:",
+                sbResp.status,
+                txt,
+              );
             }
           } catch (se) {
             console.error("[LiveMap] Supabase fallback error:", se);
