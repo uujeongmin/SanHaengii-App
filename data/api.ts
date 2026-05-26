@@ -1,10 +1,13 @@
 import { Platform } from "react-native";
 import {
   Mountain,
+  MOUNTAIN_COURSES,
   MountainCourse,
   MOUNTAINS,
-  MOUNTAIN_COURSES,
 } from "./mountains";
+
+export const DEV_TEST_TOKEN =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
 
 const LOCAL_TRAIL_API_BASE_URL =
   Platform.OS === "android" ? "http://10.0.2.2:5001" : "http://localhost:5001";
@@ -21,6 +24,9 @@ export const AUTH_API_BASE_URL =
 
 export const DATA_API_BASE_URL =
   process.env.EXPO_PUBLIC_DATA_API_BASE_URL ?? AUTH_API_BASE_URL;
+
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 const LEGACY_TRAIL_API_BASE_URL =
   process.env.EXPO_PUBLIC_TRAIL_API_BASE_URL ?? LOCAL_TRAIL_API_BASE_URL;
@@ -542,7 +548,9 @@ function formatEta(durationSec: number): string {
 }
 
 function getMountainNameFromId(mountainId: string): string {
-  const staticMountain = MOUNTAINS.find((mountain) => mountain.id === mountainId);
+  const staticMountain = MOUNTAINS.find(
+    (mountain) => mountain.id === mountainId,
+  );
   return staticMountain?.name ?? mountainId;
 }
 
@@ -551,10 +559,16 @@ function normalizeRailwayCourse(
   mountainId: string,
 ): MountainCourse {
   const id = String(row.id);
-  const mountainName = cleanText(row.mountain_name, getMountainNameFromId(mountainId));
+  const mountainName = cleanText(
+    row.mountain_name,
+    getMountainNameFromId(mountainId),
+  );
   const elevations = getFiniteNumberArray(row.elevations);
   const elevationGain = getElevationGain(elevations);
-  const difficulty = cleanText(row.difficulty, "중") as MountainCourse["difficulty"];
+  const difficulty = cleanText(
+    row.difficulty,
+    "중",
+  ) as MountainCourse["difficulty"];
   const distance = formatDistanceKm(row.length_km);
   const durationMinutes = getCourseDurationMinutes(row);
   const avgSlope = Number(row.avg_slope);
@@ -1301,13 +1315,92 @@ export const apiService = {
   },
 
   /**
+   * 긴급 상황 발생 시 emergency_logs 테이블에 데이터를 저장합니다.
+   */
+  async createEmergencyLog(
+    data: EmergencyRequest,
+    token?: string,
+  ): Promise<any> {
+    const url = `${AUTH_API_BASE_URL}/data/emergency_logs`;
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        const cleanToken = token.trim();
+        const authHeader = cleanToken.startsWith("Bearer ")
+          ? cleanToken
+          : `Bearer ${cleanToken}`;
+        headers["Authorization"] = authHeader;
+      }
+
+      // DB 테이블 컬럼 규격에 맞춰 필드 매핑 (snake_case)
+      const payload = {
+        user_id: data.userId,
+        event_type: data.eventType,
+        lat: data.location.lat,
+        lng: data.location.lng,
+        occurred_at: data.timestamp,
+      };
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to create emergency log (Status: ${response.status})`,
+        );
+        console.warn("[API] Backend emergency log save failed:", message);
+
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          throw new Error(message);
+        }
+
+        const fallbackResponse = await fetch(
+          `${SUPABASE_URL}/rest/v1/emergency_logs`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: SUPABASE_ANON_KEY,
+              Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+              Prefer: "return=representation",
+            },
+            body: JSON.stringify(payload),
+          },
+        );
+
+        if (!fallbackResponse.ok) {
+          const fallbackMessage = await getErrorMessage(
+            fallbackResponse,
+            `Failed to create emergency log fallback (Status: ${fallbackResponse.status})`,
+          );
+          throw new Error(fallbackMessage);
+        }
+
+        return await fallbackResponse.json();
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in createEmergencyLog:", error);
+      throw error;
+    }
+  },
+
+  /**
    * 긴급 상황을 백엔드에 보고하여 응급 프로토콜을 시작합니다.
    */
   async reportEmergency(
     emergencyData: EmergencyRequest,
     token?: string,
   ): Promise<any> {
-    const url = `${AUTH_API_BASE_URL}/health/data`;
+    const url = `${AUTH_API_BASE_URL}/api/emergency`;
     console.log(`[API] Reporting emergency to: ${url}`, emergencyData);
     try {
       const headers: Record<string, string> = {
