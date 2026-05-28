@@ -6,6 +6,7 @@ import {
   Animated,
   Easing,
   Image,
+  type ImageSourcePropType,
   Modal,
   RefreshControl,
   ScrollView,
@@ -30,7 +31,10 @@ import {
   getEarnedBadgeIds,
 } from '../data/badges';
 
-const CHART_HEIGHT = 192;
+const CHART_HEIGHT = 220;
+const CHART_SCALE_PADDING = 1.08;
+const CHART_BAR_WIDTH = 104;
+const CHART_GAP = 28;
 
 const LANDMARKS = [
   { name: '남산타워', height: 236 },
@@ -40,17 +44,12 @@ const LANDMARKS = [
   { name: '에베레스트', height: 8848 },
 ];
 
-const LANDMARK_IMAGES: Record<string, string> = {
-  남산타워:
-    'https://images.unsplash.com/photo-1662075223793-8719d868c934?auto=format&fit=crop&q=80&w=400',
-  롯데월드타워:
-    'https://images.unsplash.com/photo-1567954970774-58d6aa6c50dc?auto=format&fit=crop&q=80&w=400',
-  한라산:
-    'https://images.unsplash.com/photo-1740329289241-3adf04a8e3ed?auto=format&fit=crop&q=80&w=400',
-  후지산:
-    'https://images.unsplash.com/photo-1578637387939-43c525550085?auto=format&fit=crop&q=80&w=400',
-  에베레스트:
-    'https://images.unsplash.com/photo-1575819719798-83d97dd6949c?auto=format&fit=crop&q=80&w=400',
+const LANDMARK_IMAGES: Record<string, ImageSourcePropType> = {
+  남산타워: require('../assets/images/NamsanSeoulTower.png'),
+  롯데월드타워: require('../assets/images/lotte_tower.png'),
+  한라산: require('../assets/images/Hallasan.png'),
+  후지산: require('../assets/images/MountFuji.png'),
+  에베레스트: require('../assets/images/MountEverest.png'),
 };
 
 function safeNumber(value: number | null | undefined) {
@@ -224,7 +223,7 @@ export default function AchievementScreen() {
 
   const selectedLandmark =
     LANDMARKS.find((mark) => mark.name === selectedLandmarkName) ?? recommendedLandmark;
-  const chartMax = Math.max(stats.totalElevationM, selectedLandmark.height, 1) * 1.25;
+  const chartMax = Math.max(stats.totalElevationM, selectedLandmark.height, 1) * CHART_SCALE_PADDING;
   const myBarTarget = Math.max(2, (stats.totalElevationM / chartMax) * CHART_HEIGHT);
   const landmarkBarTarget = Math.max(2, (selectedLandmark.height / chartMax) * CHART_HEIGHT);
   const recentRecords = records.slice(0, 3);
@@ -426,9 +425,9 @@ export default function AchievementScreen() {
                 <View style={[styles.barTrack, { height: CHART_HEIGHT }]}>
                   <Animated.View style={[styles.landmarkBar, { height: landmarkBarAnim }]}>
                     <Image
-                      source={{ uri: LANDMARK_IMAGES[selectedLandmark.name] }}
+                      source={LANDMARK_IMAGES[selectedLandmark.name]}
                       style={styles.landmarkImage}
-                      resizeMode="cover"
+                      resizeMode="contain"
                     />
                   </Animated.View>
                 </View>
@@ -783,7 +782,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'flex-end',
-    gap: 40,
+    gap: CHART_GAP,
     marginTop: 18,
     marginBottom: 8,
   },
@@ -791,13 +790,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'flex-end',
-    gap: 40,
+    gap: CHART_GAP,
     borderBottomWidth: 2,
     borderBottomColor: '#f3f4f6',
   },
-  barCol: { alignItems: 'center', width: 80 },
+  barCol: { alignItems: 'center', width: CHART_BAR_WIDTH },
   barTopLabel: { fontSize: 13, fontWeight: '700', marginBottom: 6 },
-  barTrack: { width: 80, justifyContent: 'flex-end', alignItems: 'stretch' },
+  barTrack: { width: CHART_BAR_WIDTH, justifyContent: 'flex-end', alignItems: 'stretch' },
   myBar: {
     width: '100%',
     backgroundColor: '#22c55e',
@@ -806,17 +805,22 @@ const styles = StyleSheet.create({
   },
   landmarkBar: {
     width: '100%',
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f8fafc',
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
     overflow: 'hidden',
   },
-  landmarkImage: { width: '100%', height: '100%' },
+  landmarkImage: {
+    width: '120%',
+    height: '108%',
+    alignSelf: 'center',
+    marginTop: -6,
+  },
   chartNameRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'flex-end',
-    gap: 40,
+    gap: CHART_GAP,
     marginTop: 8,
   },
   barBottomLabel: {
@@ -825,7 +829,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 10,
     marginBottom: 14,
-    width: 80,
+    width: CHART_BAR_WIDTH,
   },
   landmarkList: { gap: 6, marginTop: 4 },
   landmarkItem: {

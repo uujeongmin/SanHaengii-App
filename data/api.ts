@@ -167,6 +167,19 @@ export interface CreateHikingRecordInput {
   elevationGainM?: number | null;
 }
 
+export interface HealthData {
+  id: number;
+  userId: number;
+  measuredAt: string | null;
+  heartRate: number | null;
+  steps: number | null;
+  calories: number | null;
+  spo2: number | null;
+  bodyTemp: number | null;
+  bloodPressureSystolic: number | null;
+  bloodPressureDiastolic: number | null;
+}
+
 export interface Badge {
   id: string;
   name: string;
@@ -276,6 +289,25 @@ function normalizeUserBadge(row: any): UserBadge {
       row.sourceRecordId ?? row.source_record_id,
     ),
     earnedAt: row.earnedAt ?? row.earned_at ?? null,
+  };
+}
+
+function normalizeHealthData(row: any): HealthData {
+  return {
+    id: Number(row.id),
+    userId: Number(row.userId ?? row.user_id),
+    measuredAt: row.measuredAt ?? row.measured_at ?? null,
+    heartRate: toNullableNumber(row.heartRate ?? row.heart_rate),
+    steps: toNullableNumber(row.steps),
+    calories: toNullableNumber(row.calories),
+    spo2: toNullableNumber(row.spo2),
+    bodyTemp: toNullableNumber(row.bodyTemp ?? row.body_temp),
+    bloodPressureSystolic: toNullableNumber(
+      row.bloodPressureSystolic ?? row.blood_pressure_systolic,
+    ),
+    bloodPressureDiastolic: toNullableNumber(
+      row.bloodPressureDiastolic ?? row.blood_pressure_diastolic,
+    ),
   };
 }
 
@@ -865,6 +897,73 @@ export const apiService = {
       }
     } catch (error) {
       console.error("[API] Error in createHikingRecord:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 현재 로그인 사용자의 최신 생체 데이터 1개를 가져옵니다.
+   */
+  async getLatestHealthData(token: string): Promise<HealthData | null> {
+    const endpoint = `${AUTH_API_BASE_URL}/health/data/latest`;
+
+    try {
+      const response = await fetch(endpoint, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to fetch latest health data (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      const row = unwrapRow<any>(data);
+
+      return row ? normalizeHealthData(row) : null;
+    } catch (error) {
+      console.error("[API] Error in getLatestHealthData:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 현재 로그인 사용자의 최근 생체 데이터 목록을 가져옵니다. 그래프 표시용입니다.
+   */
+  async getRecentHealthData(
+    token: string,
+    limit = 60,
+  ): Promise<HealthData[]> {
+    const safeLimit = Math.max(1, Math.min(300, Math.round(limit)));
+    const query = new URLSearchParams({
+      limit: String(safeLimit),
+    });
+    const endpoint = `${AUTH_API_BASE_URL}/health/data/recent?${query.toString()}`;
+
+    try {
+      const response = await fetch(endpoint, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to fetch recent health data (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      return unwrapRows<any>(data).map(normalizeHealthData);
+    } catch (error) {
+      console.error("[API] Error in getRecentHealthData:", error);
       throw error;
     }
   },

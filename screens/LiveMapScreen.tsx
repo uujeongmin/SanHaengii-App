@@ -27,6 +27,7 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
+import { useWatchHealth } from "../contexts/WatchHealthContext";
 import { apiService, type UnifiedMountainNode } from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
@@ -144,6 +145,11 @@ export default function LiveMapScreen() {
   const navigation = useNavigation<LiveMapNavProp>();
   const route = useRoute<LiveMapRouteProp>();
   const { isGuest, token, user } = useAuth();
+  const {
+    isEnabled: watchSyncEnabled,
+    latestData: watchHealthData,
+    status: watchHealthStatus,
+  } = useWatchHealth();
 
   /* 코스 파라미터 (홈에서 전달, 없으면 기본값) */
   const params = route.params as CourseParams | undefined;
@@ -189,16 +195,13 @@ export default function LiveMapScreen() {
 
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
-  const [snsSpot, setSnsSpot] = useState(true);
 
   /* ── 애니메이션 참조 ── */
-  const notifOpacity = useRef(new Animated.Value(0)).current;
-  const notifTranslateY = useRef(new Animated.Value(-20)).current;
   const dashboardTransY = useRef(new Animated.Value(120)).current;
-  const snsOpacity = useRef(new Animated.Value(1)).current;
   const analysisOpacity = useRef(new Animated.Value(1)).current;
   const unifiedChunkTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
   const hikeStartedAt = useRef(Date.now());
+  const hasLiveHealthDataRef = useRef(false);
 
   /* ── 실제 알고리즘 데이터 로드 ── */
   useEffect(() => {
@@ -390,28 +393,28 @@ export default function LiveMapScreen() {
   }
 
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(notifOpacity, {
-        toValue: 1,
-        duration: 600,
-        delay: 500,
-        useNativeDriver: true,
-      }),
-      Animated.timing(notifTranslateY, {
-        toValue: 0,
-        duration: 600,
-        delay: 500,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
-      Animated.timing(dashboardTransY, {
-        toValue: 0,
-        duration: 500,
-        easing: Easing.out(Easing.back(1.1)),
-        useNativeDriver: true,
-      }),
-    ]).start();
+    Animated.timing(dashboardTransY, {
+      toValue: 0,
+      duration: 500,
+      easing: Easing.out(Easing.back(1.1)),
+      useNativeDriver: true,
+    }).start();
   }, []);
+
+  useEffect(() => {
+    const liveHeartRate = watchHealthData?.heartRate;
+    const hasLiveHeartRate =
+      watchSyncEnabled &&
+      watchHealthStatus === "live" &&
+      liveHeartRate !== null &&
+      liveHeartRate !== undefined;
+
+    hasLiveHealthDataRef.current = hasLiveHeartRate;
+
+    if (hasLiveHeartRate) {
+      setHeartRate(liveHeartRate);
+    }
+  }, [watchHealthData?.heartRate, watchHealthStatus, watchSyncEnabled]);
 
   /* ── 센서 데이터 및 실시간 동적 ETA 시뮬레이션 ── */
   useEffect(() => {
@@ -420,10 +423,12 @@ export default function LiveMapScreen() {
     let pathIndex = 0;
     const interval = setInterval(() => {
       // 1. 센서 데이터 변동 시뮬레이션
-      setHeartRate((prev) => {
-        const next = prev + (Math.random() - 0.5) * 4;
-        return Math.min(160, Math.max(60, next));
-      });
+      if (!hasLiveHealthDataRef.current) {
+        setHeartRate((prev) => {
+          const next = prev + (Math.random() - 0.5) * 4;
+          return Math.min(160, Math.max(60, next));
+        });
+      }
 
       setCurrentPace((prev) => {
         const next = prev + (Math.random() - 0.5) * 0.2;
@@ -460,15 +465,6 @@ export default function LiveMapScreen() {
     return () => clearInterval(interval);
   }, [dynamicAnalysis, routePath, currentPace, currentSlope]);
 
-  /* SNS 조망점 토글 애니메이션 */
-  useEffect(() => {
-    Animated.timing(snsOpacity, {
-      toValue: snsSpot ? 1 : 0,
-      duration: 250,
-      useNativeDriver: true,
-    }).start();
-  }, [snsSpot]);
-
   /* 동적 분석 토글 애니메이션 */
   useEffect(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -493,6 +489,14 @@ export default function LiveMapScreen() {
     elevationGainM,
     Math.round(heartRate),
   );
+  const isUsingWatchHeartRate =
+    watchSyncEnabled &&
+    watchHealthStatus === "live" &&
+    watchHealthData?.heartRate !== null &&
+    watchHealthData?.heartRate !== undefined;
+  const analysisSourceLabel = isUsingWatchHeartRate
+    ? "워치 심박 반영"
+    : "현위치 기반";
 
   async function handleSaveHikingRecord() {
     if (!user || isGuest) {
@@ -545,7 +549,7 @@ export default function LiveMapScreen() {
         camera={mapRegion ? undefined : { ...currentLocation, zoom: 15 }}
         region={mapRegion}
         animationDuration={500}
-        mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
+        mapPadding={{ top: 130, right: 20, bottom: 300, left: 20 }}
         layerGroups={{
           BUILDING: true,
           TRAFFIC: false,
@@ -655,44 +659,6 @@ export default function LiveMapScreen() {
         </View>
       )}
 
-      {/* ── SNS 인기 조망점 알림 ── */}
-      <Animated.View
-        style={[
-          styles.notifCard,
-          { top: statusBarHeight + 82 },
-          {
-            opacity: Animated.multiply(notifOpacity, snsOpacity),
-            transform: [{ translateY: notifTranslateY }],
-          },
-          !snsSpot && styles.notifCardHidden,
-        ]}
-        pointerEvents={snsSpot ? "auto" : "none"}
-      >
-        <View style={styles.notifIconWrap}>
-          <Ionicons name="camera" size={22} color="#9333ea" />
-        </View>
-        <View style={{ flex: 1 }}>
-          <View style={styles.notifTopRow}>
-            <View style={styles.aiTag}>
-              <Text style={styles.aiTagText}>AI 추천</Text>
-            </View>
-            <Text style={styles.notifDist}>전방 300m</Text>
-          </View>
-          <Text style={styles.notifTitle}>
-            SNS 인기 조망점{mountainName ? ` (${mountainName})` : ""}
-          </Text>
-          <Text style={styles.notifDesc}>
-            인생샷을 남기기 좋은 탁 트인 뷰입니다.
-          </Text>
-        </View>
-        <TouchableOpacity
-          onPress={() => setSnsSpot(false)}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name="eye-off-outline" size={18} color="#9ca3af" />
-        </TouchableOpacity>
-      </Animated.View>
-
       {/* ── 코스 메타 뱃지 ── */}
       <View style={styles.metaBadgeGroup}>
         <View style={styles.metaBadge}>
@@ -714,66 +680,28 @@ export default function LiveMapScreen() {
           { transform: [{ translateY: dashboardTransY }] },
         ]}
       >
-        <View style={styles.toggleBar}>
-          <View style={styles.toggleItem}>
-            <View
-              style={[
-                styles.toggleIconWrap,
-                { backgroundColor: dynamicAnalysis ? "#f0fdf4" : "#f3f4f6" },
-              ]}
-            >
-              <Ionicons
-                name="pulse"
-                size={15}
-                color={dynamicAnalysis ? "#16a34a" : "#9ca3af"}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.toggleLabel,
-                  { color: dynamicAnalysis ? "#1f2937" : "#9ca3af" },
-                ]}
-              >
-                동적 분석
-              </Text>
-            </View>
-            <ToggleSwitch
-              enabled={dynamicAnalysis}
-              onChange={setDynamicAnalysis}
-              activeColor="#22c55e"
+        <View style={styles.analysisControl}>
+          <View
+            style={[
+              styles.analysisControlIcon,
+              { backgroundColor: dynamicAnalysis ? "#ecfdf5" : "#f3f4f6" },
+            ]}
+          >
+            <Ionicons
+              name="pulse"
+              size={17}
+              color={dynamicAnalysis ? "#16a34a" : "#9ca3af"}
             />
           </View>
-          <View style={styles.toggleDivider} />
-          <View style={styles.toggleItem}>
-            <View
-              style={[
-                styles.toggleIconWrap,
-                { backgroundColor: snsSpot ? "#faf5ff" : "#f3f4f6" },
-              ]}
-            >
-              <Ionicons
-                name="camera"
-                size={15}
-                color={snsSpot ? "#9333ea" : "#9ca3af"}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.toggleLabel,
-                  { color: snsSpot ? "#1f2937" : "#9ca3af" },
-                ]}
-              >
-                SNS 조망점
-              </Text>
-            </View>
-            <ToggleSwitch
-              enabled={snsSpot}
-              onChange={setSnsSpot}
-              activeColor="#9333ea"
-            />
+          <View style={styles.analysisControlTextBlock}>
+            <Text style={styles.analysisControlTitle}>동적 분석</Text>
+            <Text style={styles.analysisControlSub}>{analysisSourceLabel}</Text>
           </View>
+          <ToggleSwitch
+            enabled={dynamicAnalysis}
+            onChange={setDynamicAnalysis}
+            activeColor="#22c55e"
+          />
         </View>
 
         <View style={styles.divider} />
@@ -784,7 +712,7 @@ export default function LiveMapScreen() {
               <View>
                 <View style={styles.liveRow}>
                   <View style={styles.liveDot} />
-                  <Text style={styles.liveText}>실시간 현위치 분석 중</Text>
+                  <Text style={styles.liveText}>실시간 경로 분석 중</Text>
                 </View>
                 <Text style={styles.etaNumber}>
                   {dynamicEta}
@@ -946,52 +874,10 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   loadingText: { color: "#ffffff", marginTop: 12, fontWeight: "600" },
-  notifCard: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    backgroundColor: "rgba(255,255,255,0.97)",
-    borderRadius: 20,
-    padding: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    zIndex: 20,
-    elevation: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-  },
-  notifCardHidden: { pointerEvents: "none" },
-  notifIconWrap: {
-    width: 44,
-    height: 44,
-    backgroundColor: "#f3e8ff",
-    borderRadius: 13,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  notifTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 2,
-  },
-  aiTag: {
-    backgroundColor: "#f3e8ff",
-    borderRadius: 99,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  aiTagText: { fontSize: 11, fontWeight: "700", color: "#9333ea" },
-  notifDist: { fontSize: 11, color: "#9ca3af", fontWeight: "500" },
-  notifTitle: { fontSize: 13, fontWeight: "700", color: "#111827" },
-  notifDesc: { fontSize: 11, color: "#6b7280", marginTop: 1 },
   metaBadgeGroup: {
     position: "absolute",
     right: 16,
-    bottom: 340,
+    bottom: 300,
     flexDirection: "column",
     gap: 8,
     zIndex: 15,
@@ -1026,23 +912,28 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     overflow: "hidden",
   },
-  toggleBar: {
+  analysisControl: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
-    gap: 0,
+    paddingVertical: 12,
+    gap: 10,
   },
-  toggleItem: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },
-  toggleIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
+  analysisControlIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
   },
-  toggleLabel: { fontSize: 12, fontWeight: "700" },
+  analysisControlTextBlock: { flex: 1, minWidth: 0 },
+  analysisControlTitle: { fontSize: 13, color: "#111827", fontWeight: "800" },
+  analysisControlSub: {
+    fontSize: 11,
+    color: "#64748b",
+    fontWeight: "600",
+    marginTop: 1,
+  },
   toggleTrack: {
     width: 40,
     height: 22,
@@ -1060,12 +951,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.15,
     shadowRadius: 2,
-  },
-  toggleDivider: {
-    width: 1,
-    height: 36,
-    backgroundColor: "#f3f4f6",
-    marginHorizontal: 8,
   },
   divider: { height: 1, backgroundColor: "#f3f4f6", marginHorizontal: 0 },
   dashboardTop: {

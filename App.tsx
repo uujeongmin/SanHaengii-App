@@ -32,6 +32,7 @@ import ProfileScreen from './screens/ProfileScreen';
 import ProfileSetupScreen from './screens/ProfileSetupScreen';
 import RouteDetailScreen from './screens/RouteDetailScreen';
 import SafetyScreen from './screens/SafetyScreen';
+import { WatchHealthProvider } from './contexts/WatchHealthContext';
 
 /* ── 코스 파라미터 타입 (홈 → 내비게이션으로 전달) ── */
 export interface CourseParams {
@@ -170,8 +171,10 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-      <AppContent />
+      <WatchHealthProvider>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+        <AppContent />
+      </WatchHealthProvider>
     </AuthProvider>
   );
 }

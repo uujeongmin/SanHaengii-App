@@ -26,6 +26,10 @@ import {
   getUserInitial,
   useAuth,
 } from "../contexts/AuthContext";
+import {
+  useWatchHealth,
+  type WatchHealthStatus,
+} from "../contexts/WatchHealthContext";
 import { apiService } from "../data/api";
 import { type Mountain, type MountainCourse } from "../data/mountains";
 
@@ -54,9 +58,55 @@ const MOUNTAIN_GRADIENT_COLORS = [
   "#f59e0b", // amber
 ];
 
+function formatWatchNumber(value: number | null | undefined, suffix: string) {
+  return Number.isFinite(value) ? `${Math.round(Number(value))}${suffix}` : "--";
+}
+
+function formatWatchMeasuredAt(value: string | null | undefined) {
+  if (!value) return "아직 수신된 데이터가 없습니다.";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "최근 데이터 수신됨";
+
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  const seconds = date.getSeconds().toString().padStart(2, "0");
+  return `최근 수신 ${hours}:${minutes}:${seconds}`;
+}
+
+function getWatchStatusText(
+  status: WatchHealthStatus,
+  isEnabled: boolean,
+  isGuest: boolean,
+  error: string | null,
+) {
+  if (!isEnabled) return "동기화를 켜면 최신 생체 데이터를 불러옵니다.";
+  if (isGuest) return "로그인 후 스마트워치 동기화를 사용할 수 있어요.";
+  if (status === "syncing") return "스마트워치 데이터를 연결하는 중입니다.";
+  if (status === "live") return "스마트워치 데이터가 실시간 반영 중입니다.";
+  if (status === "empty") return "워치에서 전송된 데이터가 아직 없습니다.";
+  if (status === "error") return error ?? "스마트워치 데이터를 불러오지 못했습니다.";
+  return "스마트워치 연결을 준비하고 있습니다.";
+}
+
+function getWatchPulseColor(status: WatchHealthStatus, isEnabled: boolean) {
+  if (!isEnabled) return "#cbd5e1";
+  if (status === "live") return "#22c55e";
+  if (status === "error") return "#ef4444";
+  if (status === "syncing") return "#f59e0b";
+  return "#94a3b8";
+}
+
 export default function HomeScreen() {
   const navigation = useNavigation<HomeNavProp>();
-  const { user } = useAuth();
+  const { user, isGuest } = useAuth();
+  const {
+    isEnabled: watchSyncEnabled,
+    latestData: watchData,
+    status: watchStatus,
+    error: watchError,
+    setEnabled: setWatchSyncEnabled,
+  } = useWatchHealth();
   const [selectedMountainId, setSelectedMountainId] = useState<string | null>(
     null,
   );
@@ -109,6 +159,16 @@ export default function HomeScreen() {
     mountains.find((m) => m.id === selectedMountainId) ?? null;
   const displayName = getUserDisplayName(user);
   const userInitial = getUserInitial(user);
+  const watchStatusText = getWatchStatusText(
+    watchStatus,
+    watchSyncEnabled,
+    isGuest,
+    watchError,
+  );
+  const watchPulseColor = getWatchPulseColor(watchStatus, watchSyncEnabled);
+  const heartRateText = formatWatchNumber(watchData?.heartRate, " bpm");
+  const spo2Text = formatWatchNumber(watchData?.spo2, " %");
+  const measuredAtText = formatWatchMeasuredAt(watchData?.measuredAt);
 
   function handleStartCourse(course: MountainCourse) {
     const params: CourseParams = {
@@ -125,6 +185,18 @@ export default function HomeScreen() {
 
   function handleToggleMountain(mountainId: string) {
     setSelectedMountainId((prev) => (prev === mountainId ? null : mountainId));
+  }
+
+  function handleToggleWatchSync() {
+    if (!watchSyncEnabled && isGuest) {
+      Alert.alert(
+        "로그인이 필요해요",
+        "스마트워치 생체 데이터는 로그인 후 계정 기준으로 불러올 수 있어요.",
+      );
+      return;
+    }
+
+    setWatchSyncEnabled(!watchSyncEnabled);
   }
 
   return (
@@ -154,38 +226,67 @@ export default function HomeScreen() {
         {/* ── 스마트워치 동기화 ── */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
-            <View style={styles.row}>
+            <View style={[styles.row, styles.watchHeaderLeft]}>
               <Ionicons name="watch-outline" size={20} color="#22c55e" />
-              <Text style={styles.cardHeaderTitle}>스마트워치 동기화 중</Text>
+              <View style={styles.cardHeaderTextBlock}>
+                <Text style={styles.cardHeaderTitle}>스마트워치 동기화</Text>
+                <Text style={styles.watchStatusText} numberOfLines={2}>
+                  {watchStatusText}
+                </Text>
+              </View>
             </View>
-            <View style={styles.pingDot} />
+            <View style={styles.watchControlRow}>
+              <View
+                style={[styles.pingDot, { backgroundColor: watchPulseColor }]}
+              />
+              <TouchableOpacity
+                style={[
+                  styles.watchToggleButton,
+                  watchSyncEnabled && styles.watchToggleButtonActive,
+                ]}
+                onPress={handleToggleWatchSync}
+                activeOpacity={0.85}
+              >
+                <Text
+                  style={[
+                    styles.watchToggleText,
+                    watchSyncEnabled && styles.watchToggleTextActive,
+                  ]}
+                >
+                  {watchSyncEnabled ? "ON" : "OFF"}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.metricsRow}>
             <View style={[styles.metricChip, { backgroundColor: "#fff1f2" }]}>
               <Ionicons name="heart" size={22} color="#f43f5e" />
               <Text style={styles.metricValue}>
-                72<Text style={styles.metricUnit}> bpm</Text>
+                {heartRateText.replace(" bpm", "")}
+                <Text style={styles.metricUnit}> bpm</Text>
               </Text>
               <Text style={[styles.metricLabel, { color: "#e11d48" }]}>
-                안정적인 심박수
+                {watchSyncEnabled ? "실시간 심박수" : "심박수 대기"}
               </Text>
             </View>
             <View style={[styles.metricChip, { backgroundColor: "#eff6ff" }]}>
               <Ionicons name="pulse" size={22} color="#3b82f6" />
               <Text style={styles.metricValue}>
-                98<Text style={styles.metricUnit}> %</Text>
+                {spo2Text.replace(" %", "")}
+                <Text style={styles.metricUnit}> %</Text>
               </Text>
               <Text style={[styles.metricLabel, { color: "#2563eb" }]}>
-                산소포화도 정상
+                {watchSyncEnabled ? "실시간 산소포화도" : "산소포화도 대기"}
               </Text>
             </View>
           </View>
 
           <View style={styles.cardFooter}>
-            <Text style={styles.cardFooterText}>
-              이 신체 데이터를 반영하여 맞춤 경로를 추천합니다.
-            </Text>
+            <View style={styles.watchFooterRow}>
+              <Ionicons name="time-outline" size={14} color="#94a3b8" />
+              <Text style={styles.cardFooterText}>{measuredAtText}</Text>
+            </View>
           </View>
         </View>
 
@@ -527,15 +628,36 @@ const styles = StyleSheet.create({
   },
   cardHeaderRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     marginBottom: 16,
+    gap: 12,
+  },
+  cardHeaderTextBlock: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 8,
   },
   cardHeaderTitle: {
     fontSize: 14,
     fontWeight: "600",
     color: "#1f2937",
-    marginLeft: 8,
+  },
+  watchStatusText: {
+    fontSize: 11,
+    color: "#64748b",
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  watchControlRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexShrink: 0,
+  },
+  watchHeaderLeft: {
+    flex: 1,
+    minWidth: 0,
   },
   pingDot: {
     width: 12,
@@ -543,12 +665,33 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: "#22c55e",
   },
+  watchToggleButton: {
+    minWidth: 48,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#e5e7eb",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  watchToggleButtonActive: {
+    backgroundColor: "#16a34a",
+  },
+  watchToggleText: {
+    fontSize: 11,
+    color: "#475569",
+    fontWeight: "900",
+  },
+  watchToggleTextActive: {
+    color: "#ffffff",
+  },
   cardFooter: {
     marginTop: 16,
     paddingTop: 16,
     borderTopWidth: 1,
     borderTopColor: "#f3f4f6",
   },
+  watchFooterRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   cardFooterText: { fontSize: 12, color: "#6b7280" },
   metricsRow: { flexDirection: "row", gap: 12 },
   metricChip: { flex: 1, borderRadius: 16, padding: 16 },
