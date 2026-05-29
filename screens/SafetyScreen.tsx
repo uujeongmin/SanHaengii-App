@@ -514,7 +514,7 @@ export default function SafetyScreen() {
             <Text style={styles.sosTitle}>긴급 구조 요청</Text>
             <Text style={styles.sosDesc}>버튼을 5초 동안 누르면</Text>
             <Text style={styles.sosDesc}>
-              119 및 지정 보호자에게 위치가 전송됩니다.
+              버튼을 5초 동안 누르면 119 및 지정 보호자에게 위치가 전송됩니다.
             </Text>
           </TouchableOpacity>
 
@@ -548,6 +548,9 @@ export default function SafetyScreen() {
             <View style={styles.divider} />
 
             <View style={styles.protocolItem}>
+              <View
+                style={[styles.protocolIcon, { backgroundColor: "#eff6ff" }]}
+              >
               <View
                 style={[styles.protocolIcon, { backgroundColor: "#eff6ff" }]}
               >

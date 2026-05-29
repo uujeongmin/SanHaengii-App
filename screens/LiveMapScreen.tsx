@@ -5,6 +5,7 @@ import {
   NaverMapPathOverlay,
   NaverMapView,
   type MultiPathPart,
+  type NaverMapViewRef,
   type Region,
 } from "@mj-studio/react-native-naver-map";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
@@ -17,6 +18,7 @@ import {
   Animated,
   Easing,
   LayoutAnimation,
+  PanResponder,
   Platform,
   StatusBar,
   StyleSheet,
@@ -27,7 +29,11 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, type UnifiedMountainNode } from "../data/api";
+import {
+  apiService,
+  type PhotoSpot,
+  type UnifiedMountainNode,
+} from "../data/api";
 
 // Android에서 LayoutAnimation 활성화
 if (
@@ -46,7 +52,7 @@ const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
  * 문자열을 분 단위 숫자로 변환합니다.
  */
 function parseTimeToMinutes(timeStr: string | undefined): number {
-  if (!timeStr) return 45;
+  if (!timeStr) return 0;
 
   const hourMatch = timeStr.match(/(\d+)시간/);
   const minMatch = timeStr.match(/(\d+)분/);
@@ -62,10 +68,10 @@ function parseTimeToMinutes(timeStr: string | undefined): number {
   // 만약 숫자만 들어있는 경우 (예: "45")
   if (!hourMatch && !minMatch) {
     const onlyNum = parseInt(timeStr.replace(/[^\d]/g, ""), 10);
-    return isNaN(onlyNum) ? 45 : onlyNum;
+    return isNaN(onlyNum) ? 0 : onlyNum;
   }
 
-  return totalMinutes || 45;
+  return totalMinutes || 0;
 }
 
 function parseDistanceKm(distanceStr: string | undefined): number {
@@ -92,7 +98,9 @@ function estimateCalories(
   const heartRateBonus = Math.max(0, avgHeartRate - 100) * 1.2;
   return Math.max(
     1,
-    Math.round(distanceCalories + timeCalories + climbCalories + heartRateBonus),
+    Math.round(
+      distanceCalories + timeCalories + climbCalories + heartRateBonus,
+    ),
   );
 }
 
@@ -148,11 +156,11 @@ export default function LiveMapScreen() {
   /* 코스 파라미터 (홈에서 전달, 없으면 기본값) */
   const params = route.params as CourseParams | undefined;
   const courseId = params?.courseId;
-  const courseName = params?.courseName ?? "관절 보호 완만 코스";
+  const courseName = params?.courseName ?? "코스를 선택하세요";
   const mountainName = params?.mountainName ?? "";
-  const initialDist = params?.distance ?? "3.2km";
-  const elevation = params?.elevation ?? "+180m";
-  const initialDistanceKm = parseDistanceKm(initialDist) || 3.2;
+  const initialDist = params?.distance ?? "0km";
+  const elevation = params?.elevation ?? "0m";
+  const initialDistanceKm = parseDistanceKm(initialDist) || 0;
   const elevationGainM = parseElevationMeters(elevation);
 
   /* ── 실시간 데이터 상태 (알고리즘 연동) ── */
@@ -175,6 +183,9 @@ export default function LiveMapScreen() {
     longitude: 126.978,
   });
 
+  // SNS 인기 조망점(포토스팟) 상태
+  const [photoSpots, setPhotoSpots] = useState<PhotoSpot[]>([]);
+
   // 정적 기준 시간 및 동적 실시간 시간
   const initialMinutes = parseTimeToMinutes(params?.time);
   const [staticEta, setStaticEta] = useState(initialMinutes);
@@ -182,14 +193,139 @@ export default function LiveMapScreen() {
   const [timeSaved, setTimeSaved] = useState(0);
 
   /* 센서 시뮬레이션 데이터 */
-  const [currentPace, setCurrentPace] = useState(3.2); // km/h
-  const [currentSlope, setCurrentSlope] = useState(12); // %
-  const [heartRate, setHeartRate] = useState(170); // bpm
+  const [currentPace, setCurrentPace] = useState(0); // km/h
+  const [currentSlope, setCurrentSlope] = useState(0); // %
+  const [heartRate, setHeartRate] = useState(0); // bpm
   const [unifiedLoading, setUnifiedLoading] = useState(false);
 
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
   const [snsSpot, setSnsSpot] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+
+  /* ── 접기/펼치기 상태 ── */
+  const [isNotifCollapsed, setIsNotifCollapsed] = useState(false);
+  const [isDashboardCollapsed, setIsDashboardCollapsed] = useState(false);
+
+  /* ── 지도 컨트롤 상태 ── */
+  const mapRef = useRef<NaverMapViewRef>(null);
+
+  const [zoom, setZoom] = useState(15);
+
+  const handleZoomIn = () => {
+    setZoom((z) => {
+      const newZoom = Math.min(z + 1, 21);
+      mapRef.current?.animateCameraTo({
+        latitude: currentLocation.latitude,
+        longitude: currentLocation.longitude,
+        zoom: newZoom,
+      });
+      return newZoom;
+    });
+  };
+  const handleZoomOut = () => {
+    setZoom((z) => {
+      const newZoom = Math.max(z - 1, 5);
+      mapRef.current?.animateCameraTo({
+        latitude: currentLocation.latitude,
+        longitude: currentLocation.longitude,
+        zoom: newZoom,
+      });
+      return newZoom;
+    });
+  };
+  const handleRescanGPS = () => {
+    if (mapRef.current) {
+      mapRef.current.animateCameraTo({
+        latitude: currentLocation.latitude,
+        longitude: currentLocation.longitude,
+        zoom: 16,
+      });
+    }
+  };
+
+  const isNotifCollapsedRef = useRef(isNotifCollapsed);
+  useEffect(() => {
+    isNotifCollapsedRef.current = isNotifCollapsed;
+  }, [isNotifCollapsed]);
+
+  const isDashboardCollapsedRef = useRef(isDashboardCollapsed);
+  useEffect(() => {
+    isDashboardCollapsedRef.current = isDashboardCollapsed;
+  }, [isDashboardCollapsed]);
+
+  const toggleNotifFold = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setIsNotifCollapsed(!isNotifCollapsed);
+  };
+
+  const toggleDashboardFold = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setIsDashboardCollapsed(!isDashboardCollapsed);
+  };
+
+  const handlePauseResume = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setIsPaused((prev) => !prev);
+  };
+
+  const handleStopNavigation = () => {
+    Alert.alert("내비게이션 중단", "현재 진행 중인 내비게이션을 종료할까요?", [
+      { text: "취소", style: "cancel" },
+      {
+        text: "종료",
+        style: "destructive",
+        onPress: () => {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          // 상태 초기화
+          setRoutePath([]);
+          setStartPoint(null);
+          setEndPoint(null);
+          setRemainingDist(0);
+          setDynamicEta(0);
+          setUnifiedPathPartChunks([]);
+          // 필요한 경우 navigation.goBack() 또는 다른 처리가 가능하지만,
+          // 요청에 따라 로컬 상태만 초기화하여 맵에 남게 함.
+        },
+      },
+    ]);
+  };
+
+  /* ── 제스처 처리 (PanResponder) ── */
+  const notifPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => isNotifCollapsedRef.current,
+      onMoveShouldSetPanResponder: (_, gs) => Math.abs(gs.dy) > 20,
+      onPanResponderRelease: (_, gs) => {
+        if (gs.dy < -20) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setIsNotifCollapsed(true);
+        } else if (Math.abs(gs.dx) < 5 && Math.abs(gs.dy) < 5) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setIsNotifCollapsed((prev) => !prev);
+        }
+      },
+    }),
+  ).current;
+
+  const dashboardPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => isDashboardCollapsedRef.current,
+      onMoveShouldSetPanResponder: (_, gs) => Math.abs(gs.dy) > 20,
+      onPanResponderRelease: (_, gs) => {
+        if (gs.dy > 20) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setIsDashboardCollapsed(true);
+        } else if (gs.dy < -20) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setIsDashboardCollapsed(false);
+        } else if (Math.abs(gs.dx) < 5 && Math.abs(gs.dy) < 5) {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setIsDashboardCollapsed((prev) => !prev);
+        }
+      },
+    }),
+  ).current;
 
   /* ── 애니메이션 참조 ── */
   const notifOpacity = useRef(new Animated.Value(0)).current;
@@ -207,6 +343,7 @@ export default function LiveMapScreen() {
     setStaticEta(initialMinutes);
     setDynamicEta(initialMinutes);
     setTimeSaved(0);
+    setIsPaused(false);
     hikeStartedAt.current = Date.now();
   }, [courseId, initialDistanceKm, initialMinutes]);
 
@@ -215,6 +352,32 @@ export default function LiveMapScreen() {
       fetchRealAlgorithmData(courseId);
     }
   }, [courseId]);
+
+  // 사진(포토) 스팟 로드 (마운드 관계없이 전체 표시)
+  useEffect(() => {
+    let mounted = true;
+    async function loadPhotoSpots() {
+      try {
+        const rows = await apiService.getPhotoSpots();
+
+        if (!mounted) return;
+
+        const spots = (rows || []).filter(
+          (s: PhotoSpot) =>
+            Number.isFinite(s.latitude) && Number.isFinite(s.longitude),
+        );
+
+        setPhotoSpots(spots);
+      } catch (e) {
+        console.error("[LiveMap] Failed to load photo spots:", e);
+        setPhotoSpots([]);
+      }
+    }
+    loadPhotoSpots();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const normalizedMountainName = mountainName.trim();
@@ -419,6 +582,8 @@ export default function LiveMapScreen() {
 
     let pathIndex = 0;
     const interval = setInterval(() => {
+      if (isPaused) return;
+
       // 1. 센서 데이터 변동 시뮬레이션
       setHeartRate((prev) => {
         const next = prev + (Math.random() - 0.5) * 4;
@@ -458,7 +623,7 @@ export default function LiveMapScreen() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [dynamicAnalysis, routePath, currentPace, currentSlope]);
+  }, [dynamicAnalysis, routePath, currentPace, currentSlope, isPaused]);
 
   /* SNS 조망점 토글 애니메이션 */
   useEffect(() => {
@@ -541,8 +706,9 @@ export default function LiveMapScreen() {
     <View style={styles.container}>
       {/* ── 네이버 지도 ── */}
       <NaverMapView
+        ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        camera={mapRegion ? undefined : { ...currentLocation, zoom: 15 }}
+        camera={mapRegion ? undefined : { ...currentLocation, zoom }}
         region={mapRegion}
         animationDuration={500}
         mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
@@ -555,6 +721,7 @@ export default function LiveMapScreen() {
           CADASTRAL: false,
         }}
         isShowScaleBar={true}
+        isShowZoomControls={false}
         isShowLocationButton={false}
       >
         {/* 통합 경로 네트워크 표시 */}
@@ -614,6 +781,22 @@ export default function LiveMapScreen() {
             caption={{ text: "도착" }}
           />
         )}
+
+        {/* SNS 포토스팟 마커 (토글로 제어) */}
+        {snsSpot &&
+          photoSpots.length > 0 &&
+          photoSpots.map((spot, index) => (
+            <NaverMapMarkerOverlay
+              key={`sns-spot-${spot.spot}-${index}`}
+              latitude={spot.latitude}
+              longitude={spot.longitude}
+              width={28}
+              height={28}
+              image={require("../assets/images/photo_spot_marker.png")}
+              caption={{ text: spot.spot ?? "포토스팟" }}
+              zIndex={12}
+            />
+          ))}
       </NaverMapView>
 
       <View style={styles.overlay} pointerEvents="none" />
@@ -621,7 +804,7 @@ export default function LiveMapScreen() {
       {/* ── 상단 네비 바 ── */}
       <View style={[styles.topBar, { top: statusBarHeight + 12 }]}>
         <View style={styles.routeLabel}>
-          <Ionicons name="navigate" size={16} color="#ffffff" />
+          <Ionicons name="navigate" size={16} color="#746e6e" />
           <View style={{ flex: 1, minWidth: 0 }}>
             {mountainName ? (
               <Text style={styles.routeLabelSub} numberOfLines={1}>
@@ -655,232 +838,297 @@ export default function LiveMapScreen() {
         </View>
       )}
 
-      {/* ── SNS 인기 조망점 알림 ── */}
+      {/* ── 하단 맵 컨트롤 및 대시보드 묶음 ── */}
       <Animated.View
         style={[
-          styles.notifCard,
-          { top: statusBarHeight + 82 },
-          {
-            opacity: Animated.multiply(notifOpacity, snsOpacity),
-            transform: [{ translateY: notifTranslateY }],
-          },
-          !snsSpot && styles.notifCardHidden,
-        ]}
-        pointerEvents={snsSpot ? "auto" : "none"}
-      >
-        <View style={styles.notifIconWrap}>
-          <Ionicons name="camera" size={22} color="#9333ea" />
-        </View>
-        <View style={{ flex: 1 }}>
-          <View style={styles.notifTopRow}>
-            <View style={styles.aiTag}>
-              <Text style={styles.aiTagText}>AI 추천</Text>
-            </View>
-            <Text style={styles.notifDist}>전방 300m</Text>
-          </View>
-          <Text style={styles.notifTitle}>
-            SNS 인기 조망점{mountainName ? ` (${mountainName})` : ""}
-          </Text>
-          <Text style={styles.notifDesc}>
-            인생샷을 남기기 좋은 탁 트인 뷰입니다.
-          </Text>
-        </View>
-        <TouchableOpacity
-          onPress={() => setSnsSpot(false)}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name="eye-off-outline" size={18} color="#9ca3af" />
-        </TouchableOpacity>
-      </Animated.View>
-
-      {/* ── 코스 메타 뱃지 ── */}
-      <View style={styles.metaBadgeGroup}>
-        <View style={styles.metaBadge}>
-          <Ionicons name="location-outline" size={12} color="#6b7280" />
-          <Text style={styles.metaBadgeText}>{remainingDist.toFixed(2)}km</Text>
-        </View>
-        <View style={styles.metaBadge}>
-          <Ionicons name="trending-up-outline" size={12} color="#3b82f6" />
-          <Text style={[styles.metaBadgeText, { color: "#2563eb" }]}>
-            {elevation}
-          </Text>
-        </View>
-      </View>
-
-      {/* ── 하단 대시보드 ── */}
-      <Animated.View
-        style={[
-          styles.dashboard,
+          styles.dashboardWrapper,
           { transform: [{ translateY: dashboardTransY }] },
         ]}
+        pointerEvents="box-none"
       >
-        <View style={styles.toggleBar}>
-          <View style={styles.toggleItem}>
-            <View
-              style={[
-                styles.toggleIconWrap,
-                { backgroundColor: dynamicAnalysis ? "#f0fdf4" : "#f3f4f6" },
-              ]}
-            >
-              <Ionicons
-                name="pulse"
-                size={15}
-                color={dynamicAnalysis ? "#16a34a" : "#9ca3af"}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.toggleLabel,
-                  { color: dynamicAnalysis ? "#1f2937" : "#9ca3af" },
-                ]}
+        {/* ── 커스텀 지도 컨트롤 ── */}
+        <View style={styles.mapControlContainer} pointerEvents="box-none">
+          {isDashboardCollapsed && (
+            <>
+              <TouchableOpacity
+                style={styles.mapControlCircle}
+                onPress={handleZoomIn}
+                activeOpacity={0.8}
               >
-                동적 분석
-              </Text>
-            </View>
-            <ToggleSwitch
-              enabled={dynamicAnalysis}
-              onChange={setDynamicAnalysis}
-              activeColor="#22c55e"
-            />
-          </View>
-          <View style={styles.toggleDivider} />
-          <View style={styles.toggleItem}>
-            <View
-              style={[
-                styles.toggleIconWrap,
-                { backgroundColor: snsSpot ? "#faf5ff" : "#f3f4f6" },
-              ]}
-            >
-              <Ionicons
-                name="camera"
-                size={15}
-                color={snsSpot ? "#9333ea" : "#9ca3af"}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.toggleLabel,
-                  { color: snsSpot ? "#1f2937" : "#9ca3af" },
-                ]}
+                <Ionicons name="add" size={24} color="#374151" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.mapControlCircle}
+                onPress={handleZoomOut}
+                activeOpacity={0.8}
               >
-                SNS 조망점
-              </Text>
-            </View>
-            <ToggleSwitch
-              enabled={snsSpot}
-              onChange={setSnsSpot}
-              activeColor="#9333ea"
-            />
-          </View>
+                <Ionicons name="remove" size={24} color="#374151" />
+              </TouchableOpacity>
+            </>
+          )}
+          <TouchableOpacity
+            style={styles.mapControlCircle}
+            onPress={handleRescanGPS}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="locate" size={20} color="#374151" />
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.divider} />
-
-        {dynamicAnalysis ? (
-          <Animated.View style={{ opacity: analysisOpacity }}>
-            <View style={styles.dashboardTop}>
-              <View>
-                <View style={styles.liveRow}>
-                  <View style={styles.liveDot} />
-                  <Text style={styles.liveText}>실시간 현위치 분석 중</Text>
-                </View>
-                <Text style={styles.etaNumber}>
-                  {dynamicEta}
-                  <Text style={styles.etaUnit}>분 남음</Text>
-                </Text>
-              </View>
-              <View style={{ alignItems: "flex-end" }}>
-                <Text style={styles.distLabel}>잔여 거리</Text>
-                <Text style={styles.distValue}>
-                  {remainingDist.toFixed(2)}km
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.metricsRow}>
-              <View style={[styles.metricBox, { backgroundColor: "#f9fafb" }]}>
-                <Text style={[styles.metricBoxLabel, { color: "#6b7280" }]}>
-                  현재 페이스
-                </Text>
-                <Text style={[styles.metricBoxValue, { color: "#111827" }]}>
-                  {currentPace.toFixed(1)}
-                  <Text style={styles.metricBoxUnit}> km/h</Text>
-                </Text>
-              </View>
-              <View style={[styles.metricBox, { backgroundColor: "#fff7ed" }]}>
-                <Text style={[styles.metricBoxLabel, { color: "#ea580c" }]}>
-                  현재 경사도
-                </Text>
-                <Text style={[styles.metricBoxValue, { color: "#ea580c" }]}>
-                  {currentSlope}
-                  <Text style={styles.metricBoxUnit}> %</Text>
-                </Text>
-              </View>
-              <View style={[styles.metricBox, { backgroundColor: "#eff6ff" }]}>
-                <Text style={[styles.metricBoxLabel, { color: "#2563eb" }]}>
-                  심박수
-                </Text>
-                <Text style={[styles.metricBoxValue, { color: "#2563eb" }]}>
-                  {Math.round(heartRate)}
-                  <Text style={styles.metricBoxUnit}> bpm</Text>
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.infoBox}>
-              <Ionicons
-                name="information-circle-outline"
-                size={16}
-                color="#9ca3af"
+        {/* ── 대시보드 ── */}
+        <View style={styles.dashboard} {...dashboardPanResponder.panHandlers}>
+          {isDashboardCollapsed ? (
+            <View style={styles.collapsedDashboardRow}>
+              <Text style={styles.collapsedEtaText}>{dynamicEta}분 남음</Text>
+              <View
+                style={{ width: 1, height: 16, backgroundColor: "#f3f4f6" }}
               />
-              <Text style={styles.infoText}>
-                회원님의 <Text style={styles.infoTextBold}>현위치</Text>에서
-                심박수({Math.round(heartRate)}bpm)와 페이스(
-                {currentPace.toFixed(1)}km/h)를 반영하여{" "}
-                <Text style={styles.infoTextBold}>실제 알고리즘(Tobler) </Text>
-                에 따른 도착 시간을 실시간으로 계산합니다.{" "}
-                {timeSaved > 0 && (
-                  <Text style={styles.infoTextBold}>
-                    (기존 대비 {timeSaved}분 단축)
-                  </Text>
-                )}
+              <Text style={styles.collapsedDistText}>
+                {remainingDist.toFixed(2)}km
               </Text>
+              <Ionicons name="chevron-up" size={18} color="#9ca3af" />
             </View>
+          ) : (
+            <>
+              <View style={styles.toggleBar}>
+                <View style={styles.toggleItem}>
+                  <View
+                    style={[
+                      styles.toggleIconWrap,
+                      {
+                        backgroundColor: dynamicAnalysis
+                          ? "#f0fdf4"
+                          : "#f3f4f6",
+                      },
+                    ]}
+                  >
+                    <Ionicons
+                      name="pulse"
+                      size={15}
+                      color={dynamicAnalysis ? "#16a34a" : "#9ca3af"}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.toggleLabel,
+                        { color: dynamicAnalysis ? "#1f2937" : "#9ca3af" },
+                      ]}
+                    >
+                      동적 분석
+                    </Text>
+                  </View>
+                  <ToggleSwitch
+                    enabled={dynamicAnalysis}
+                    onChange={setDynamicAnalysis}
+                    activeColor="#22c55e"
+                  />
+                </View>
+                <View style={styles.toggleDivider} />
+                <View style={styles.toggleItem}>
+                  <View
+                    style={[
+                      styles.toggleIconWrap,
+                      { backgroundColor: snsSpot ? "#faf5ff" : "#f3f4f6" },
+                    ]}
+                  >
+                    <Ionicons
+                      name="camera"
+                      size={15}
+                      color={snsSpot ? "#9333ea" : "#9ca3af"}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.toggleLabel,
+                        { color: snsSpot ? "#1f2937" : "#9ca3af" },
+                      ]}
+                    >
+                      SNS 조망점
+                    </Text>
+                  </View>
+                  <ToggleSwitch
+                    enabled={snsSpot}
+                    onChange={setSnsSpot}
+                    activeColor="#9333ea"
+                  />
+                </View>
+              </View>
 
-            <TouchableOpacity
-              style={[
-                styles.saveRecordButton,
-                savingRecord && styles.saveRecordButtonDisabled,
-              ]}
-              activeOpacity={0.86}
-              onPress={handleSaveHikingRecord}
-              disabled={savingRecord}
-            >
-              {savingRecord ? (
-                <ActivityIndicator size="small" color="#ffffff" />
+              <View style={styles.divider} />
+
+              {dynamicAnalysis ? (
+                <Animated.View style={{ opacity: analysisOpacity }}>
+                  <View style={styles.dashboardTop}>
+                    <View>
+                      <View style={styles.liveRow}>
+                        <View style={styles.liveDot} />
+                        <Text style={styles.liveText}>
+                          실시간 현위치 분석 중
+                        </Text>
+                      </View>
+                      <Text style={styles.etaNumber}>
+                        {dynamicEta}
+                        <Text style={styles.etaUnit}>분 남음</Text>
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={styles.distLabel}>잔여 거리</Text>
+                      <Text style={styles.distValue}>
+                        {remainingDist.toFixed(2)}km
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.metricsRow}>
+                    <View
+                      style={[styles.metricBox, { backgroundColor: "#f9fafb" }]}
+                    >
+                      <Text
+                        style={[styles.metricBoxLabel, { color: "#6b7280" }]}
+                      >
+                        현재 페이스
+                      </Text>
+                      <Text
+                        style={[styles.metricBoxValue, { color: "#111827" }]}
+                      >
+                        {currentPace.toFixed(1)}
+                        <Text style={styles.metricBoxUnit}> km/h</Text>
+                      </Text>
+                    </View>
+                    <View
+                      style={[styles.metricBox, { backgroundColor: "#fff7ed" }]}
+                    >
+                      <Text
+                        style={[styles.metricBoxLabel, { color: "#ea580c" }]}
+                      >
+                        현재 경사도
+                      </Text>
+                      <Text
+                        style={[styles.metricBoxValue, { color: "#ea580c" }]}
+                      >
+                        {currentSlope}
+                        <Text style={styles.metricBoxUnit}> %</Text>
+                      </Text>
+                    </View>
+                    <View
+                      style={[styles.metricBox, { backgroundColor: "#eff6ff" }]}
+                    >
+                      <Text
+                        style={[styles.metricBoxLabel, { color: "#2563eb" }]}
+                      >
+                        심박수
+                      </Text>
+                      <Text
+                        style={[styles.metricBoxValue, { color: "#2563eb" }]}
+                      >
+                        {heartRate === 0 ? "(-)" : Math.round(heartRate)}
+                        <Text style={styles.metricBoxUnit}> bpm</Text>
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.infoBox}>
+                    <Ionicons
+                      name="information-circle-outline"
+                      size={16}
+                      color="#9ca3af"
+                    />
+                    <Text style={styles.infoText}>
+                      회원님의 <Text style={styles.infoTextBold}>현위치</Text>
+                      에서 심박수(
+                      {heartRate === 0 ? "(-)" : Math.round(heartRate)}
+                      bpm)와 페이스(
+                      {currentPace.toFixed(1)}km/h)를 반영하여{" "}
+                      <Text style={styles.infoTextBold}>
+                        실제 알고리즘(Tobler){" "}
+                      </Text>
+                      에 따른 도착 시간을 실시간으로 계산합니다.{" "}
+                      {timeSaved > 0 && (
+                        <Text style={styles.infoTextBold}>
+                          (기존 대비 {timeSaved}분 단축)
+                        </Text>
+                      )}
+                    </Text>
+                  </View>
+
+                  {courseId && remainingDist > 0 && dynamicEta > 0 && (
+                    <View style={styles.navButtonRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.navButton,
+                          { backgroundColor: "#f97316" },
+                        ]}
+                        onPress={handlePauseResume}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons
+                          name={isPaused ? "play" : "pause"}
+                          size={18}
+                          color="#ffffff"
+                        />
+                        <Text style={styles.navButtonText}>
+                          {isPaused ? "재개하기" : "일시정지"}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.navButton,
+                          { backgroundColor: "#ef4444" },
+                        ]}
+                        onPress={handleStopNavigation}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="stop" size={18} color="#ffffff" />
+                        <Text style={styles.navButtonText}>중단하기</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  <TouchableOpacity
+                    style={[
+                      styles.saveRecordButton,
+                      savingRecord && styles.saveRecordButtonDisabled,
+                    ]}
+                    activeOpacity={0.86}
+                    onPress={handleSaveHikingRecord}
+                    disabled={savingRecord}
+                  >
+                    {savingRecord ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={18}
+                        color="#ffffff"
+                      />
+                    )}
+                    <Text style={styles.saveRecordButtonText}>
+                      {savingRecord ? "기록 저장 중" : "산행 기록 저장"}
+                    </Text>
+                  </TouchableOpacity>
+                </Animated.View>
               ) : (
-                <Ionicons name="checkmark-circle" size={18} color="#ffffff" />
+                <View style={styles.analysisOffState}>
+                  <View style={styles.analysisOffIcon}>
+                    <Ionicons
+                      name="eye-off-outline"
+                      size={22}
+                      color="#9ca3af"
+                    />
+                  </View>
+                  <Text style={styles.analysisOffTitle}>
+                    동적 분석이 꺼져 있습니다
+                  </Text>
+                  <Text style={styles.analysisOffSub}>
+                    위 토글을 켜면 현위치 기반 페이스·경사도 분석이 시작됩니다.
+                  </Text>
+                </View>
               )}
-              <Text style={styles.saveRecordButtonText}>
-                {savingRecord ? "기록 저장 중" : "산행 기록 저장"}
-              </Text>
-            </TouchableOpacity>
-          </Animated.View>
-        ) : (
-          <View style={styles.analysisOffState}>
-            <View style={styles.analysisOffIcon}>
-              <Ionicons name="eye-off-outline" size={22} color="#9ca3af" />
-            </View>
-            <Text style={styles.analysisOffTitle}>
-              동적 분석이 꺼져 있습니다
-            </Text>
-            <Text style={styles.analysisOffSub}>
-              위 토글을 켜면 현위치 기반 페이스·경사도 분석이 시작됩니다.
-            </Text>
-          </View>
-        )}
+            </>
+          )}
+        </View>
       </Animated.View>
     </View>
   );
@@ -921,7 +1169,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     marginBottom: 1,
   },
-  routeLabelText: { fontSize: 13, color: "#111827", fontWeight: "700" },
+  routeLabelText: { fontSize: 13, color: "#606267", fontWeight: "500" },
   sosButton: {
     width: 48,
     height: 48,
@@ -991,7 +1239,7 @@ const styles = StyleSheet.create({
   metaBadgeGroup: {
     position: "absolute",
     right: 16,
-    bottom: 340,
+    bottom: 200,
     flexDirection: "column",
     gap: 8,
     zIndex: 15,
@@ -1011,15 +1259,36 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   metaBadgeText: { fontSize: 12, fontWeight: "600", color: "#374151" },
-  dashboard: {
+  dashboardWrapper: {
     position: "absolute",
     bottom: 16,
     left: 14,
     right: 14,
-    backgroundColor: "#ffffff",
-    borderRadius: 28,
     zIndex: 20,
     elevation: 16,
+  },
+  mapControlContainer: {
+    alignSelf: "flex-end",
+    marginBottom: 16,
+    marginRight: 2,
+    gap: 8,
+  },
+  mapControlCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
+  dashboard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 28,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
@@ -1170,5 +1439,45 @@ const styles = StyleSheet.create({
     color: "#9ca3af",
     textAlign: "center",
     paddingHorizontal: 24,
+  },
+  notifTouchable: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  collapsedDashboardRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14,
+    gap: 12,
+  },
+  collapsedEtaText: { fontSize: 16, fontWeight: "700", color: "#111827" },
+  collapsedDistText: { fontSize: 16, fontWeight: "700", color: "#1f2937" },
+  navButtonRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 12,
+  },
+  navButton: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  navButtonText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "700",
   },
 });

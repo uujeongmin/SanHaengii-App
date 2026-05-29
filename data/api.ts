@@ -3,8 +3,11 @@ import {
   Mountain,
   MOUNTAIN_COURSES,
   MountainCourse,
-  MOUNTAINS,
+  MOUNTAINS
 } from "./mountains";
+
+export const DEV_TEST_TOKEN =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
 
 export const DEV_TEST_TOKEN =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
@@ -214,6 +217,13 @@ export interface UserBadge {
   badgeId: string;
   sourceRecordId: number | null;
   earnedAt: string | null;
+}
+
+export interface PhotoSpot {
+  spot: string;
+  address: string;
+  latitude: number;
+  longitude: number;
 }
 
 export interface LoginResponse {
@@ -1512,6 +1522,19 @@ export const apiService = {
       return await response.json();
     } catch (error) {
       console.error("[API] Error in getHealthData:", error);
+      throw error;
+    }
+  },
+
+  async getPhotoSpots(): Promise<PhotoSpot[]> {
+    try {
+      const rows = await fetchDataRows<PhotoSpot>("Photo_Spots", {
+        select: "spot,address,latitude,longitude",
+        limit: "500",
+      });
+      return rows;
+    } catch (error) {
+      console.error("[API] Error in getPhotoSpots:", error);
       throw error;
     }
   },
