@@ -1,10 +1,13 @@
 import { Platform } from "react-native";
 import {
   Mountain,
+  MOUNTAIN_COURSES,
   MountainCourse,
   MOUNTAINS,
-  MOUNTAIN_COURSES,
 } from "./mountains";
+
+export const DEV_TEST_TOKEN =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
 
 const LOCAL_TRAIL_API_BASE_URL =
   Platform.OS === "android" ? "http://10.0.2.2:5001" : "http://localhost:5001";
@@ -21,6 +24,9 @@ export const AUTH_API_BASE_URL =
 
 export const DATA_API_BASE_URL =
   process.env.EXPO_PUBLIC_DATA_API_BASE_URL ?? AUTH_API_BASE_URL;
+
+export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
+export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 const LEGACY_TRAIL_API_BASE_URL =
   process.env.EXPO_PUBLIC_TRAIL_API_BASE_URL ?? LOCAL_TRAIL_API_BASE_URL;
@@ -68,6 +74,32 @@ export interface PathResult {
   total_minutes?: number;
   total_seconds?: number;
   eta?: string;
+}
+
+export interface AnomalyResult {
+  is_anomaly: boolean;
+  message: string;
+  anomaly_type: string | null;
+  timestamp: string;
+}
+
+export interface EmergencyRequest {
+  userId: string | number;
+  eventType: string;
+  timestamp: string;
+  location: Coordinate;
+}
+
+export interface HealthDataRequest {
+  measured_at: string; // ISO 8601
+  heart_rate: number;
+  steps?: number;
+  calories?: number;
+  spo2?: number;
+  body_temp?: number;
+  blood_pressure_systolic?: number;
+  blood_pressure_diastolic?: number;
+  user_id?: string | number;
 }
 
 export interface UnifiedMountainNode {
@@ -182,6 +214,13 @@ export interface UserBadge {
   badgeId: string;
   sourceRecordId: number | null;
   earnedAt: string | null;
+}
+
+export interface PhotoSpot {
+  spot: string;
+  address: string;
+  latitude: number;
+  longitude: number;
 }
 
 export interface LoginResponse {
@@ -516,7 +555,9 @@ function formatEta(durationSec: number): string {
 }
 
 function getMountainNameFromId(mountainId: string): string {
-  const staticMountain = MOUNTAINS.find((mountain) => mountain.id === mountainId);
+  const staticMountain = MOUNTAINS.find(
+    (mountain) => mountain.id === mountainId,
+  );
   return staticMountain?.name ?? mountainId;
 }
 
@@ -525,10 +566,16 @@ function normalizeRailwayCourse(
   mountainId: string,
 ): MountainCourse {
   const id = String(row.id);
-  const mountainName = cleanText(row.mountain_name, getMountainNameFromId(mountainId));
+  const mountainName = cleanText(
+    row.mountain_name,
+    getMountainNameFromId(mountainId),
+  );
   const elevations = getFiniteNumberArray(row.elevations);
   const elevationGain = getElevationGain(elevations);
-  const difficulty = cleanText(row.difficulty, "중") as MountainCourse["difficulty"];
+  const difficulty = cleanText(
+    row.difficulty,
+    "중",
+  ) as MountainCourse["difficulty"];
   const distance = formatDistanceKm(row.length_km);
   const durationMinutes = getCourseDurationMinutes(row);
   const avgSlope = Number(row.avg_slope);
@@ -1235,6 +1282,256 @@ export const apiService = {
       return bestRow;
     } catch (error) {
       console.error("[API] Error in getUnifiedMountainPath:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 이상 징후를 확인합니다 (백엔드 알고리즘 호출).
+   */
+  async checkAnomaly(sensorData: any, token?: string): Promise<AnomalyResult> {
+    const url = `${AUTH_API_BASE_URL}/health/data`;
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        const cleanToken = token.trim();
+        const authHeader = cleanToken.startsWith("Bearer ")
+          ? cleanToken
+          : `Bearer ${cleanToken}`;
+        headers["Authorization"] = authHeader;
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sensor_data: sensorData }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to check anomaly (Status: ${response.status})`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in checkAnomaly:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 긴급 상황 발생 시 emergency_logs 테이블에 데이터를 저장합니다.
+   */
+  async createEmergencyLog(
+    data: EmergencyRequest,
+    token?: string,
+  ): Promise<any> {
+    const url = `${AUTH_API_BASE_URL}/data/emergency_logs`;
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        const cleanToken = token.trim();
+        const authHeader = cleanToken.startsWith("Bearer ")
+          ? cleanToken
+          : `Bearer ${cleanToken}`;
+        headers["Authorization"] = authHeader;
+      }
+
+      // DB 테이블 컬럼 규격에 맞춰 필드 매핑 (snake_case)
+      const payload = {
+        user_id: data.userId,
+        event_type: data.eventType,
+        lat: data.location.lat,
+        lng: data.location.lng,
+        occurred_at: data.timestamp,
+      };
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to create emergency log (Status: ${response.status})`,
+        );
+        console.warn("[API] Backend emergency log save failed:", message);
+
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          throw new Error(message);
+        }
+
+        const fallbackResponse = await fetch(
+          `${SUPABASE_URL}/rest/v1/emergency_logs`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: SUPABASE_ANON_KEY,
+              Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+              Prefer: "return=representation",
+            },
+            body: JSON.stringify(payload),
+          },
+        );
+
+        if (!fallbackResponse.ok) {
+          const fallbackMessage = await getErrorMessage(
+            fallbackResponse,
+            `Failed to create emergency log fallback (Status: ${fallbackResponse.status})`,
+          );
+          throw new Error(fallbackMessage);
+        }
+
+        return await fallbackResponse.json();
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in createEmergencyLog:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 긴급 상황을 백엔드에 보고하여 응급 프로토콜을 시작합니다.
+   */
+  async reportEmergency(
+    emergencyData: EmergencyRequest,
+    token?: string,
+  ): Promise<any> {
+    const url = `${AUTH_API_BASE_URL}/api/emergency`;
+    console.log(`[API] Reporting emergency to: ${url}`, emergencyData);
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (token) {
+        const cleanToken = token.trim();
+        const authHeader = cleanToken.startsWith("Bearer ")
+          ? cleanToken
+          : `Bearer ${cleanToken}`;
+        headers["Authorization"] = authHeader;
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(emergencyData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error(
+          `[API] Error reporting emergency: ${response.status}`,
+          errorData,
+        );
+        throw new Error(
+          `Failed to report emergency (Status: ${response.status})`,
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in reportEmergency:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 생체 데이터를 서버에 저장합니다 (Railway DB 연동).
+   */
+  async saveHealthData(data: HealthDataRequest, token?: string): Promise<any> {
+    const url = `${AUTH_API_BASE_URL}/data/health_data_temp`;
+
+    console.log(`[API] Saving health data to: ${url}`, data);
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      };
+
+      if (token) {
+        const cleanToken = token.trim();
+        const authHeader = cleanToken.startsWith("Bearer ")
+          ? cleanToken
+          : `Bearer ${cleanToken}`;
+        headers["Authorization"] = authHeader;
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error(
+          `[API] Error saving health data: ${response.status}`,
+          errorData,
+        );
+        throw new Error(
+          `Failed to save health data (Status: ${response.status})`,
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in saveHealthData:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 저장된 생체 데이터를 가져옵니다 (Railway DB 연동).
+   */
+  async getHealthData(token?: string): Promise<any> {
+    const url = `${AUTH_API_BASE_URL}/data/health_data_temp`;
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      };
+
+      if (token) {
+        const cleanToken = token.trim();
+        const authHeader = cleanToken.startsWith("Bearer ")
+          ? cleanToken
+          : `Bearer ${cleanToken}`;
+        headers["Authorization"] = authHeader;
+      }
+
+      const response = await fetch(url, { headers });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch health data (Status: ${response.status})`,
+        );
+      }
+      return await response.json();
+    } catch (error) {
+      console.error("[API] Error in getHealthData:", error);
+      throw error;
+    }
+  },
+
+  async getPhotoSpots(): Promise<PhotoSpot[]> {
+    try {
+      const rows = await fetchDataRows<PhotoSpot>("Photo_Spots", {
+        select: "spot,address,latitude,longitude",
+        limit: "500",
+      });
+      return rows;
+    } catch (error) {
+      console.error("[API] Error in getPhotoSpots:", error);
       throw error;
     }
   },
