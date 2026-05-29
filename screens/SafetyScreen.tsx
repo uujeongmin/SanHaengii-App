@@ -1,21 +1,27 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
   Easing,
+  KeyboardAvoidingView,
+  Linking,
+  Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../contexts/AuthContext";
-import { apiService, DEV_TEST_TOKEN } from "../data/api";
+import { apiService } from "../data/api";
 
 export default function SafetyScreen() {
-  const { token, user } = useAuth();
+  const { completeProfile, isGuest, token, user } = useAuth();
 
   /* ── 배경 글로우 펄스 ── */
   const bgPulse = useRef(new Animated.Value(1)).current;
@@ -29,11 +35,56 @@ export default function SafetyScreen() {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [isReporting, setIsReporting] = useState(false);
 
+  /* ── 보호자 연락처 모달 상태 ── */
+  const [isGuardianModalVisible, setIsGuardianModalVisible] = useState(false);
+  const [tempGuardianNumber, setTempGuardianNumber] = useState("");
+
   /* ── 응급 프로토콜 카운트다운 ── */
   const [countdown, setCountdown] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const authToken = token ?? DEV_TEST_TOKEN;
-  const emergencyUserId = user?.id && user.id > 0 ? user.id : 1;
+  const authToken = token || "";
+  const emergencyUserId = user?.id || 1;
+
+  /**
+   * 보호자 연락처 수정
+   */
+  const handleEditGuardian = () => {
+    if (isGuest) {
+      Alert.alert(
+        "알림",
+        "게스트 모드에서는 보호자 번호를 수정할 수 없습니다.",
+      );
+      return;
+    }
+    setTempGuardianNumber(user?.guardianNumber ?? "");
+    setIsGuardianModalVisible(true);
+  };
+
+  /**
+   * 보호자 연락처 저장
+   */
+  const handleSaveGuardian = async () => {
+    if (!tempGuardianNumber) {
+      Alert.alert("알림", "연락처를 입력해주세요.");
+      return;
+    }
+    try {
+      setIsReporting(true);
+      await completeProfile({
+        nickname: user!.nickname || "",
+        name: user!.name || "",
+        age: user!.age || "",
+        gender: user!.gender || "none",
+        guardianNumber: tempGuardianNumber,
+      });
+      Alert.alert("성공", "보호자 연락처가 수정되었습니다.");
+      setIsGuardianModalVisible(false);
+    } catch (error) {
+      Alert.alert("오류", "보호자 연락처 수정에 실패했습니다.");
+    } finally {
+      setIsReporting(false);
+    }
+  };
 
   /**
    * 카운트다운 타이머 중지 및 초기화
@@ -96,6 +147,34 @@ export default function SafetyScreen() {
     clearEmergencyTimer();
     const { showSuccessAlert = true } = options;
 
+    let locationCoords = { lat: 37.557999, lng: 127.007993 }; // fallback
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === "granted") {
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+        locationCoords = {
+          lat: location.coords.latitude,
+          lng: location.coords.longitude,
+        };
+        console.log(
+          `[GPS 확인] 위도: ${locationCoords.lat}, 경도: ${locationCoords.lng}`,
+        );
+        Alert.alert(
+          "GPS 탐색 성공",
+          `현재 위치를 찾았습니다.\n위도: ${locationCoords.lat}\n경도: ${locationCoords.lng}`,
+        );
+      } else {
+        console.warn("[Protocol] Location permission denied, using fallback");
+      }
+    } catch (err) {
+      console.warn(
+        "[Protocol] Could not get GPS position, using fallback",
+        err,
+      );
+    }
+
     const emergencyPayload = {
       userId: emergencyUserId,
       eventType: reason.includes("수동")
@@ -104,10 +183,7 @@ export default function SafetyScreen() {
           ? "낙상_감지"
           : "이상_징후",
       timestamp: new Date().toISOString(),
-      location: {
-        lat: 37.557999,
-        lng: 127.007993,
-      },
+      location: locationCoords,
     };
 
     try {
@@ -205,41 +281,6 @@ export default function SafetyScreen() {
   };
 
   /**
-   * [Test] 서버에 크리티컬한 이상 징후 데이터를 삽입합니다.
-   */
-  const injectAnomalyTestData = async () => {
-    const criticalData = {
-      measured_at: new Date().toISOString(),
-      heart_rate: 185, // 빈맥 유도
-      steps: 120,
-      calories: 10,
-      spo2: 85, // 저산소증 유도
-      body_temp: 39.8, // 고열 유도
-      blood_pressure_systolic: 160,
-      blood_pressure_diastolic: 110,
-      user_id: emergencyUserId,
-    };
-
-    try {
-      console.log("[Test] Injecting CRITICAL anomaly data to server...");
-      await apiService.saveHealthData(criticalData, authToken);
-      setLastHealthData(criticalData);
-
-      Alert.alert(
-        "이상 데이터 주입 완료",
-        "health_data_temp 테이블에 테스트 이상 데이터를 저장했습니다.",
-        [{ text: "확인" }],
-      );
-    } catch (error) {
-      console.error("[Test] Data injection failed:", error);
-      Alert.alert(
-        "에러",
-        "health_data_temp 테이블에 이상 데이터를 저장하지 못했습니다.",
-      );
-    }
-  };
-
-  /**
    * 저장된 생체 데이터 가져오기 및 이상 징후 체크
    */
   const fetchAndCheckHealthData = async () => {
@@ -276,8 +317,8 @@ export default function SafetyScreen() {
       }, 5000);
 
       Alert.alert(
-        "실시간 모니터링 시작",
-        "스마트워치로 실시간 데이터를 분석합니다.",
+        "모니터링 시작",
+        "서버와 통신하며 실시간 데이터를 분석합니다.",
       );
     }
     return () => clearInterval(interval);
@@ -471,70 +512,11 @@ export default function SafetyScreen() {
               />
             </View>
             <Text style={styles.sosTitle}>긴급 구조 요청</Text>
+            <Text style={styles.sosDesc}>버튼을 5초 동안 누르면</Text>
             <Text style={styles.sosDesc}>
               버튼을 5초 동안 누르면 119 및 지정 보호자에게 위치가 전송됩니다.
             </Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.simBtn,
-              { backgroundColor: "#fef2f2", borderColor: "#fecaca" },
-            ]}
-            onPress={injectAnomalyTestData}
-          >
-            <Text style={[styles.simBtnText, { color: "#dc2626" }]}>
-              서버 이상 데이터 주입
-            </Text>
-          </TouchableOpacity>
-
-          {lastHealthData && (
-            <View
-              style={[
-                styles.card,
-                { backgroundColor: "#fdf4ff", borderColor: "#f5d0fe" },
-              ]}
-            >
-              <View style={styles.cardHeaderRow}>
-                <Text style={[styles.cardTitle, { color: "#86198f" }]}>
-                  실시간 워치 데이터
-                </Text>
-                <Ionicons name="watch-outline" size={20} color="#86198f" />
-              </View>
-              <View style={styles.dataGrid}>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>심박수</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.heart_rate ?? 0} bpm
-                  </Text>
-                </View>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>걸음수</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.steps ?? 0} 보
-                  </Text>
-                </View>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>산소포화도</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.spo2 ?? 0}%
-                  </Text>
-                </View>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>체온</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.body_temp ?? 0}°C
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.dataTime}>
-                수신 시각:{" "}
-                {lastHealthData.measured_at
-                  ? new Date(lastHealthData.measured_at).toLocaleString()
-                  : "N/A"}
-              </Text>
-            </View>
-          )}
 
           <View style={styles.card}>
             <Text style={styles.cardTitle}>자동 신고 프로토콜</Text>
@@ -555,8 +537,10 @@ export default function SafetyScreen() {
                   <Text style={styles.protocolOn}>ON</Text>
                 </View>
                 <Text style={styles.protocolDesc}>
-                  비정상적인 가속도 변화가 감지된 후 30초 내 사용자 응답이
-                  없으면 자동 신고됩니다.
+                  비정상적인 가속도 변화가 감지된 후
+                </Text>
+                <Text style={styles.protocolDesc}>
+                  30초 내 사용자 응답이 없으면 자동 신고됩니다.
                 </Text>
               </View>
             </View>
@@ -564,6 +548,9 @@ export default function SafetyScreen() {
             <View style={styles.divider} />
 
             <View style={styles.protocolItem}>
+              <View
+                style={[styles.protocolIcon, { backgroundColor: "#eff6ff" }]}
+              >
               <View
                 style={[styles.protocolIcon, { backgroundColor: "#eff6ff" }]}
               >
@@ -575,8 +562,10 @@ export default function SafetyScreen() {
                   <Text style={styles.protocolOn}>ON</Text>
                 </View>
                 <Text style={styles.protocolDesc}>
-                  산행 중 20분 이상 이동이 감지되지 않으면 안부 확인 알림을
-                  전송합니다.
+                  산행 중 20분 이상 이동이 감지되지 않으면
+                </Text>
+                <Text style={styles.protocolDesc}>
+                  안부 확인 알림을 전송합니다.
                 </Text>
               </View>
             </View>
@@ -585,9 +574,6 @@ export default function SafetyScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
               <Text style={styles.cardTitle}>비상 연락망</Text>
-              <TouchableOpacity style={styles.addBtn}>
-                <Text style={styles.addBtnText}>+ 추가</Text>
-              </TouchableOpacity>
             </View>
 
             <ContactRow
@@ -596,18 +582,72 @@ export default function SafetyScreen() {
               iconColor="#dc2626"
               name="119 구조대"
               sub="위치정보 자동 포함"
+              phoneNumber="119"
             />
 
             <ContactRow
               iconName="person-outline"
               iconBg="#dbeafe"
               iconColor="#2563eb"
-              name="어머니 (보호자)"
-              sub="010-1234-5678"
+              name="보호자"
+              sub={user?.guardianNumber || "등록된 번호가 없습니다."}
+              phoneNumber={user?.guardianNumber || ""}
+              onEdit={handleEditGuardian}
             />
           </View>
         </View>
       </ScrollView>
+
+      {/* ── 보호자 연락처 수정 모달 ── */}
+      <Modal
+        visible={isGuardianModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsGuardianModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>보호자 연락처 수정</Text>
+              <TouchableOpacity
+                onPress={() => setIsGuardianModalVisible(false)}
+              >
+                <Ionicons name="close" size={24} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalBody}>
+              <Text style={styles.modalLabel}>새로운 보호자 연락처</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={tempGuardianNumber}
+                onChangeText={setTempGuardianNumber}
+                placeholder="예: 010-1234-5678"
+                keyboardType="phone-pad"
+                autoFocus
+              />
+            </View>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setIsGuardianModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSaveBtn}
+                onPress={handleSaveGuardian}
+              >
+                <Text style={styles.modalSaveText}>저장</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -618,13 +658,28 @@ function ContactRow({
   iconColor,
   name,
   sub,
+  phoneNumber,
+  onEdit,
 }: {
   iconName: keyof typeof Ionicons.glyphMap;
   iconBg: string;
   iconColor: string;
   name: string;
   sub: string;
+  phoneNumber?: string;
+  onEdit?: () => void;
 }) {
+  const handleCall = () => {
+    if (!phoneNumber) {
+      Alert.alert("알림", "등록된 전화번호가 없습니다.");
+      return;
+    }
+    const telUrl = `tel:${phoneNumber.replace(/[^0-9]/g, "")}`;
+    Linking.openURL(telUrl).catch(() => {
+      Alert.alert("오류", "전화 앱을 열 수 없습니다.");
+    });
+  };
+
   return (
     <View style={cStyles.row}>
       <View style={[cStyles.avatar, { backgroundColor: iconBg }]}>
@@ -634,9 +689,16 @@ function ContactRow({
         <Text style={cStyles.name}>{name}</Text>
         <Text style={cStyles.sub}>{sub}</Text>
       </View>
-      <TouchableOpacity style={cStyles.callBtn}>
-        <Ionicons name="call-outline" size={18} color="#4b5563" />
-      </TouchableOpacity>
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        {onEdit && (
+          <TouchableOpacity style={cStyles.editBtn} onPress={onEdit}>
+            <Ionicons name="create-outline" size={18} color="#4b5563" />
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={cStyles.callBtn} onPress={handleCall}>
+          <Ionicons name="call-outline" size={18} color="#4b5563" />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -662,6 +724,21 @@ const cStyles = StyleSheet.create({
   },
   name: { fontSize: 14, fontWeight: "700", color: "#111827" },
   sub: { fontSize: 12, color: "#6b7280", marginTop: 2 },
+  editBtn: {
+    width: 40,
+    height: 40,
+    backgroundColor: "#ffffff",
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+  },
   callBtn: {
     width: 40,
     height: 40,
@@ -937,4 +1014,82 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   addBtnText: { fontSize: 12, fontWeight: "700", color: "#2563eb" },
+
+  /* ── 모달 스타일 ── */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: "#ffffff",
+    borderRadius: 24,
+    padding: 24,
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  modalBody: {
+    marginBottom: 24,
+  },
+  modalLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#374151",
+    marginBottom: 8,
+  },
+  modalInput: {
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    backgroundColor: "#f9fafb",
+    paddingHorizontal: 16,
+    fontSize: 15,
+    color: "#111827",
+  },
+  modalFooter: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#4b5563",
+  },
+  modalSaveBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#10b981",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalSaveText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
 });
