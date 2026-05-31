@@ -1,8 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import type { RouteProp } from "@react-navigation/native";
-import { useNavigation, useRoute } from "@react-navigation/native";
+import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import React, { useEffect, useState } from "react";
+import * as SecureStore from "expo-secure-store";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -16,6 +17,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { CourseParams, RootStackParamList } from "../App";
 import { apiService, type Mountain, type MountainCourse } from "../data/api";
+
+const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
 
 type MountainCoursesNavProp = NativeStackNavigationProp<
   RootStackParamList,
@@ -44,10 +47,53 @@ export default function MountainCoursesScreen() {
   const [courses, setCourses] = useState<MountainCourse[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [savedCourseIds, setSavedCourseIds] = useState<Set<string>>(new Set());
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchData();
   }, [mountainId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadSavedIds();
+    }, []),
+  );
+
+  async function loadSavedIds() {
+    try {
+      const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+      if (savedStr) {
+        const savedCourses: MountainCourse[] = JSON.parse(savedStr);
+        setSavedCourseIds(new Set(savedCourses.map((c) => c.id)));
+      } else {
+        setSavedCourseIds(new Set());
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleToggleSave(course: MountainCourse) {
+    if (savingId !== null) return;
+    setSavingId(course.id);
+    try {
+      const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+      const savedCourses: MountainCourse[] = savedStr ? JSON.parse(savedStr) : [];
+      const isAlreadySaved = savedCourses.some((c) => c.id === course.id);
+
+      const updated = isAlreadySaved
+        ? savedCourses.filter((c) => c.id !== course.id)
+        : [...savedCourses, course];
+
+      await SecureStore.setItemAsync(SAVED_MAPS_KEY, JSON.stringify(updated));
+      setSavedCourseIds(new Set(updated.map((c) => c.id)));
+    } catch {
+      // ignore
+    } finally {
+      setSavingId(null);
+    }
+  }
 
   async function fetchData() {
     try {
@@ -224,15 +270,42 @@ export default function MountainCoursesScreen() {
                     </View>
                   </View>
 
-                  {/* 시작 버튼 */}
-                  <TouchableOpacity
-                    style={styles.startBtn}
-                    onPress={() => handleStartCourse(course)}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="navigate" size={16} color="#ffffff" />
-                    <Text style={styles.startBtnText}>이 코스로 시작하기</Text>
-                  </TouchableOpacity>
+                  {/* 버튼 행 */}
+                  <View style={styles.btnRow}>
+                    <TouchableOpacity
+                      style={[styles.startBtn, { flex: 1 }]}
+                      onPress={() => handleStartCourse(course)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="navigate" size={16} color="#ffffff" />
+                      <Text style={styles.startBtnText}>이 코스로 시작하기</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.saveBtn,
+                        savedCourseIds.has(course.id) && styles.saveBtnSaved,
+                      ]}
+                      onPress={() => handleToggleSave(course)}
+                      activeOpacity={0.8}
+                      disabled={savingId === course.id}
+                    >
+                      {savingId === course.id ? (
+                        <ActivityIndicator size="small" color="#16a34a" />
+                      ) : (
+                        <Ionicons
+                          name={
+                            savedCourseIds.has(course.id)
+                              ? "bookmark"
+                              : "bookmark-outline"
+                          }
+                          size={20}
+                          color={
+                            savedCourseIds.has(course.id) ? "#16a34a" : "#6b7280"
+                          }
+                        />
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             );
@@ -371,6 +444,11 @@ const styles = StyleSheet.create({
   },
   metaText: { fontSize: 13, fontWeight: "600", color: "#374151" },
   metaDivider: { width: 1, height: 14, backgroundColor: "#e5e7eb" },
+  btnRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   startBtn: {
     backgroundColor: "#16a34a",
     borderRadius: 14,
@@ -381,6 +459,20 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   startBtnText: { fontSize: 15, fontWeight: "700", color: "#ffffff" },
+  saveBtn: {
+    width: 50,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#e5e7eb",
+  },
+  saveBtnSaved: {
+    backgroundColor: "#dcfce7",
+    borderColor: "#86efac",
+  },
 
   emptyState: {
     alignItems: "center",

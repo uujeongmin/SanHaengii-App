@@ -39,9 +39,15 @@ import {
 } from "../data/badges";
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
-type MenuItemKey = "notifications" | "safety" | "account";
+type MenuItemKey = "notifications" | "safety" | "account" | "savedMaps";
 
 const MENU_ITEMS = [
+  {
+    key: "savedMaps",
+    icon: "cloud-download-outline" as const,
+    label: "저장된 지도",
+    desc: "오프라인에서 볼 수 있는 코스",
+  },
   {
     key: "notifications",
     icon: "notifications-outline" as const,
@@ -357,6 +363,11 @@ export default function ProfileScreen() {
   }
 
   function handleMenuPress(key: MenuItemKey) {
+    if (key === "savedMaps") {
+      navigation.navigate("SavedMaps");
+      return;
+    }
+
     if (key === "notifications") {
       setNotificationModalVisible(true);
       return;
@@ -626,11 +637,7 @@ export default function ProfileScreen() {
                   index < MENU_ITEMS.length - 1 && styles.menuRowBorder,
                 ]}
                 activeOpacity={0.7}
-                onPress={() => {
-                  if ("screen" in item && item.screen) {
-                    navigation.navigate(item.screen as any);
-                  }
-                }}
+                onPress={() => handleMenuPress(item.key)}
               >
                 <View style={styles.menuLeft}>
                   <Ionicons name={item.icon} size={20} color="#6b7280" />
