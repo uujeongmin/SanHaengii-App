@@ -26,6 +26,7 @@ import {
   needsProfileSetup,
   useAuth,
 } from "./contexts/AuthContext";
+import { WatchHealthProvider } from "./contexts/WatchHealthContext";
 import AchievementScreen from "./screens/AchievementScreen";
 import AllRoutesScreen from "./screens/AllRoutesScreen";
 import HomeScreen from "./screens/HomeScreen";
@@ -176,8 +177,10 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-      <AppContent />
+      <WatchHealthProvider>
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+        <AppContent />
+      </WatchHealthProvider>
     </AuthProvider>
   );
 }

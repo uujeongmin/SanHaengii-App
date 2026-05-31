@@ -14,7 +14,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../App";
-import { apiService } from "../data/api";
+import { DEFAULT_MOUNTAIN_IMAGE, apiService } from "../data/api";
 import { type Mountain } from "../data/mountains";
 
 type AllRoutesNavProp = NativeStackNavigationProp<
@@ -29,6 +29,9 @@ export default function AllRoutesScreen() {
   const [mountains, setMountains] = useState<Mountain[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [failedMountainImageIds, setFailedMountainImageIds] = useState<
+    Set<string>
+  >(() => new Set());
 
   useEffect(() => {
     fetchMountains();
@@ -39,6 +42,7 @@ export default function AllRoutesScreen() {
       setLoading(true);
       const data = await apiService.getMountains();
       setMountains(data);
+      setFailedMountainImageIds(new Set());
     } catch (error) {
       console.error("Failed to fetch mountains:", error);
     } finally {
@@ -52,6 +56,20 @@ export default function AllRoutesScreen() {
       m.region.toLowerCase().includes(searchQuery.toLowerCase()) ||
       m.description.toLowerCase().includes(searchQuery.toLowerCase()),
   );
+
+  function getMountainImageUri(mountain: Mountain) {
+    if (failedMountainImageIds.has(mountain.id)) return DEFAULT_MOUNTAIN_IMAGE;
+    return mountain.img || DEFAULT_MOUNTAIN_IMAGE;
+  }
+
+  function handleMountainImageError(mountain: Mountain) {
+    setFailedMountainImageIds((prev) => {
+      if (prev.has(mountain.id)) return prev;
+      const next = new Set(prev);
+      next.add(mountain.id);
+      return next;
+    });
+  }
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
@@ -118,9 +136,10 @@ export default function AllRoutesScreen() {
               {/* 이미지 */}
               <View style={styles.imageWrapper}>
                 <Image
-                  source={{ uri: mountain.img }}
+                  source={{ uri: getMountainImageUri(mountain) }}
                   style={styles.image}
                   resizeMode="cover"
+                  onError={() => handleMountainImageError(mountain)}
                 />
                 <View style={styles.imageOverlay} />
 
