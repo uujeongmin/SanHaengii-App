@@ -36,7 +36,7 @@ export const BASE_URL = DATA_API_BASE_URL;
 
 const RAILWAY_TABLE_PAGE_SIZE = 1000;
 const COURSE_DISPLAY_LIMIT = 200;
-const DEFAULT_MOUNTAIN_IMAGE =
+export const DEFAULT_MOUNTAIN_IMAGE =
   MOUNTAINS[0]?.img ??
   "https://images.unsplash.com/photo-1685330186861-278ae211fd65?auto=format&fit=crop&q=80&w=800";
 const DEFAULT_COURSE_IMAGE =
@@ -124,6 +124,7 @@ export interface UnifiedMountainPath {
   region: string | null;
   height: number | null;
   description: string | null;
+  image_url?: string | null;
   nodes: UnifiedMountainNode[] | null;
   courses: UnifiedMountainCourse[] | null;
 }
@@ -177,13 +178,17 @@ export interface HikingRecord {
   mountainName: string | null;
   courseId: string | null;
   courseName: string | null;
+  status: string | null;
   durationMinutes: number | null;
   distanceKm: number | null;
   calories: number | null;
+  steps: number | null;
   avgHeartRate: number | null;
   maxAltitude: number | null;
   elevationGainM: number | null;
   createdAt: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
 }
 
 export interface CreateHikingRecordInput {
@@ -194,9 +199,40 @@ export interface CreateHikingRecordInput {
   durationMinutes: number | null;
   distanceKm: number | null;
   calories?: number | null;
+  steps?: number | null;
   avgHeartRate: number | null;
   maxAltitude?: number | null;
   elevationGainM?: number | null;
+}
+
+export interface StartHikingRecordInput {
+  userId: number;
+  mountainName: string | null;
+  courseId?: string | null;
+  courseName?: string | null;
+}
+
+export interface FinishHikingRecordInput {
+  durationMinutes: number | null;
+  distanceKm: number | null;
+  calories?: number | null;
+  steps?: number | null;
+  avgHeartRate: number | null;
+  maxAltitude?: number | null;
+  elevationGainM?: number | null;
+}
+
+export interface HealthData {
+  id: number;
+  userId: number;
+  measuredAt: string | null;
+  heartRate: number | null;
+  steps: number | null;
+  calories: number | null;
+  spo2: number | null;
+  bodyTemp: number | null;
+  bloodPressureSystolic: number | null;
+  bloodPressureDiastolic: number | null;
 }
 
 export interface Badge {
@@ -281,17 +317,21 @@ function normalizeHikingRecord(row: any): HikingRecord {
     mountainName: row.mountainName ?? row.mountain_name ?? null,
     courseId: row.courseId ?? row.course_id ?? null,
     courseName: row.courseName ?? row.course_name ?? null,
+    status: row.status ?? null,
     durationMinutes: toNullableNumber(
       row.durationMinutes ?? row.duration_minutes,
     ),
     distanceKm: toNullableNumber(row.distanceKm ?? row.distance_km),
     calories: toNullableNumber(row.calories),
+    steps: toNullableNumber(row.steps ?? row.total_steps),
     avgHeartRate: toNullableNumber(row.avgHeartRate ?? row.avg_heart_rate),
     maxAltitude,
     elevationGainM: toNullableNumber(
-      row.elevationGainM ?? row.elevation_gain_m ?? maxAltitude,
+      row.elevationGainM ?? row.elevation_gain_m ?? row.elevation_gain ?? maxAltitude,
     ),
     createdAt: row.createdAt ?? row.created_at ?? null,
+    startedAt: row.startedAt ?? row.started_at ?? null,
+    endedAt: row.endedAt ?? row.ended_at ?? null,
   };
 }
 
@@ -315,6 +355,25 @@ function normalizeUserBadge(row: any): UserBadge {
       row.sourceRecordId ?? row.source_record_id,
     ),
     earnedAt: row.earnedAt ?? row.earned_at ?? null,
+  };
+}
+
+function normalizeHealthData(row: any): HealthData {
+  return {
+    id: Number(row.id),
+    userId: Number(row.userId ?? row.user_id),
+    measuredAt: row.measuredAt ?? row.measured_at ?? null,
+    heartRate: toNullableNumber(row.heartRate ?? row.heart_rate),
+    steps: toNullableNumber(row.steps),
+    calories: toNullableNumber(row.calories),
+    spo2: toNullableNumber(row.spo2),
+    bodyTemp: toNullableNumber(row.bodyTemp ?? row.body_temp),
+    bloodPressureSystolic: toNullableNumber(
+      row.bloodPressureSystolic ?? row.blood_pressure_systolic,
+    ),
+    bloodPressureDiastolic: toNullableNumber(
+      row.bloodPressureDiastolic ?? row.blood_pressure_diastolic,
+    ),
   };
 }
 
@@ -436,9 +495,20 @@ function normalizeMountainKey(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function toKoreanISOString(date = new Date()): string {
+  const kstTime = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return `${kstTime.toISOString().slice(0, 19)}+09:00`;
+}
+
 function cleanText(value: unknown, fallback = ""): string {
   const text = String(value ?? "").trim();
   return text.length > 0 ? text : fallback;
+}
+
+function cleanImageUrl(value: unknown, fallback: string): string {
+  const url = String(value ?? "").trim();
+  if (/^https?:\/\//i.test(url)) return url;
+  return fallback;
 }
 
 function toDisplayAltitude(value: unknown): number {
@@ -673,7 +743,7 @@ function buildMountainFromRailwayRow(
     region: cleanText(row.region, "지역 정보 없음"),
     altitude: toDisplayAltitude(row.height),
     description: cleanText(row.description, `${name} 등산로 정보`),
-    img: DEFAULT_MOUNTAIN_IMAGE,
+    img: cleanImageUrl(row.image_url, DEFAULT_MOUNTAIN_IMAGE),
     courseCount: toDisplayCourseCount(courseCount),
   };
 }
@@ -833,6 +903,10 @@ export const apiService = {
 
       return rows
         .map(normalizeHikingRecord)
+        .filter(
+          (record: HikingRecord) =>
+            record.status !== "active" && record.status !== "cancelled",
+        )
         .sort((a: HikingRecord, b: HikingRecord) => {
           const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
           const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -840,6 +914,186 @@ export const apiService = {
         });
     } catch (error) {
       console.error("[API] Error in getHikingRecords:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 산행 시작 시 active 상태의 hiking_records row를 먼저 생성합니다.
+   * 백엔드는 이 active row를 기준으로 워치 생체 데이터를 연결할 수 있습니다.
+   */
+  async startHikingRecord(
+    record: StartHikingRecordInput,
+    token?: string | null,
+  ): Promise<HikingRecord> {
+    const endpoint = `${AUTH_API_BASE_URL}/data/hiking_records`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const now = toKoreanISOString();
+    const basePayload: Record<string, unknown> = {
+      user_id: record.userId,
+      mountain_name: record.mountainName,
+      status: "active",
+      started_at: now,
+      duration_minutes: null,
+      distance_km: null,
+      avg_heart_rate: null,
+      max_altitude: null,
+      calories: null,
+      steps: null,
+    };
+    const enrichedPayload: Record<string, unknown> = {
+      ...basePayload,
+      course_id: record.courseId ?? null,
+      course_name: record.courseName ?? null,
+    };
+
+    async function postRecord(payload: Record<string, unknown>) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to start hiking record (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      const row = Array.isArray(data)
+        ? data[0]
+        : (data.record ?? data.row ?? data.data ?? data);
+
+      return normalizeHikingRecord(row);
+    }
+
+    try {
+      try {
+        return await postRecord(enrichedPayload);
+      } catch (error) {
+        console.warn(
+          "[API] Retrying active hiking record start with base schema:",
+          error,
+        );
+        return await postRecord(basePayload);
+      }
+    } catch (error) {
+      console.error("[API] Error in startHikingRecord:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * active hiking_records row를 산행 종료 결과로 업데이트합니다.
+   */
+  async finishHikingRecord(
+    recordId: number,
+    record: FinishHikingRecordInput,
+    token?: string | null,
+  ): Promise<HikingRecord> {
+    const endpoint = `${AUTH_API_BASE_URL}/data/hiking_records/${recordId}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const payload: Record<string, unknown> = {
+      status: "completed",
+      ended_at: toKoreanISOString(),
+      duration_minutes: record.durationMinutes,
+      distance_km: record.distanceKm,
+      avg_heart_rate: record.avgHeartRate,
+      max_altitude: record.maxAltitude ?? record.elevationGainM ?? null,
+      calories: record.calories ?? null,
+      elevation_gain: record.elevationGainM ?? record.maxAltitude ?? null,
+    };
+
+    if (record.steps !== undefined && record.steps !== null) {
+      payload.steps = record.steps;
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to finish hiking record (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      const row = Array.isArray(data)
+        ? data[0]
+        : (data.record ?? data.row ?? data.data ?? data);
+
+      return normalizeHikingRecord(row);
+    } catch (error) {
+      console.error("[API] Error in finishHikingRecord:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * active hiking_records row를 중단 상태로 업데이트합니다.
+   */
+  async cancelHikingRecord(
+    recordId: number,
+    token?: string | null,
+  ): Promise<HikingRecord> {
+    const endpoint = `${AUTH_API_BASE_URL}/data/hiking_records/${recordId}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          status: "cancelled",
+          ended_at: toKoreanISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to cancel hiking record (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      const row = Array.isArray(data)
+        ? data[0]
+        : (data.record ?? data.row ?? data.data ?? data);
+
+      return normalizeHikingRecord(row);
+    } catch (error) {
+      console.error("[API] Error in cancelHikingRecord:", error);
       throw error;
     }
   },
@@ -869,13 +1123,19 @@ export const apiService = {
       max_altitude: record.maxAltitude ?? record.elevationGainM ?? null,
     };
 
-    const enrichedPayload = {
+    const enrichedPayload: Record<string, unknown> = {
       ...legacyPayload,
+      status: "completed",
+      ended_at: toKoreanISOString(),
       course_id: record.courseId ?? null,
       course_name: record.courseName ?? null,
       calories: record.calories ?? null,
-      elevation_gain_m: record.elevationGainM ?? record.maxAltitude ?? null,
+      elevation_gain: record.elevationGainM ?? record.maxAltitude ?? null,
     };
+
+    if (record.steps !== undefined && record.steps !== null) {
+      enrichedPayload.steps = record.steps;
+    }
 
     async function postRecord(payload: Record<string, unknown>) {
       const response = await fetch(endpoint, {
@@ -1065,7 +1325,7 @@ export const apiService = {
 
       const [rows, courseCounts] = await Promise.all([
         fetchDataRows<UnifiedMountainPath>("unified_mountain_paths", {
-          select: "id,mountain_name,region,height,description",
+          select: "id,mountain_name,region,height,description,image_url",
           limit: "1000",
         }),
         getCourseCountByMountain(),
@@ -1085,10 +1345,19 @@ export const apiService = {
 
       rows.forEach((row) => {
         const name = normalizeMountainKey(row.mountain_name);
-        if (!name || mountainsByName.has(name)) return;
+        if (!name) return;
 
         const courseCount = courseCounts.get(name) ?? 0;
         if (courseCount <= 0) return;
+
+        const existingMountain = mountainsByName.get(name);
+        if (existingMountain) {
+          mountainsByName.set(name, {
+            ...existingMountain,
+            img: cleanImageUrl(row.image_url, existingMountain.img),
+          });
+          return;
+        }
 
         mountainsByName.set(
           name,
@@ -1519,6 +1788,75 @@ export const apiService = {
       return await response.json();
     } catch (error) {
       console.error("[API] Error in getHealthData:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 현재 로그인 사용자의 최신 생체 데이터 1개를 가져옵니다.
+   */
+  async getLatestHealthData(token: string): Promise<HealthData | null> {
+    const endpoint = `${AUTH_API_BASE_URL}/health/data/latest`;
+
+    try {
+      const response = await fetch(endpoint, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to fetch latest health data (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      const row = data?.data === null ? null : unwrapRow<any>(data);
+
+      return row && typeof row === "object" && row.id !== undefined
+        ? normalizeHealthData(row)
+        : null;
+    } catch (error) {
+      console.error("[API] Error in getLatestHealthData:", error);
+      throw error;
+    }
+  },
+
+  /**
+   * 현재 로그인 사용자의 최근 생체 데이터 목록을 가져옵니다. 그래프 표시용입니다.
+   */
+  async getRecentHealthData(
+    token: string,
+    limit = 60,
+  ): Promise<HealthData[]> {
+    const safeLimit = Math.max(1, Math.min(300, Math.round(limit)));
+    const query = new URLSearchParams({
+      limit: String(safeLimit),
+    });
+    const endpoint = `${AUTH_API_BASE_URL}/health/data/recent?${query.toString()}`;
+
+    try {
+      const response = await fetch(endpoint, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to fetch recent health data (Status: ${response.status})`,
+        );
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      return unwrapRows<any>(data).map(normalizeHealthData);
+    } catch (error) {
+      console.error("[API] Error in getRecentHealthData:", error);
       throw error;
     }
   },

@@ -6,6 +6,7 @@ import {
   Animated,
   Easing,
   Image,
+  type ImageSourcePropType,
   Modal,
   RefreshControl,
   ScrollView,
@@ -30,7 +31,10 @@ import {
   getEarnedBadgeIds,
 } from '../data/badges';
 
-const CHART_HEIGHT = 192;
+const CHART_HEIGHT = 220;
+const CHART_SCALE_PADDING = 1.08;
+const CHART_BAR_WIDTH = 104;
+const CHART_GAP = 28;
 
 const LANDMARKS = [
   { name: '남산타워', height: 236 },
@@ -40,17 +44,12 @@ const LANDMARKS = [
   { name: '에베레스트', height: 8848 },
 ];
 
-const LANDMARK_IMAGES: Record<string, string> = {
-  남산타워:
-    'https://images.unsplash.com/photo-1662075223793-8719d868c934?auto=format&fit=crop&q=80&w=400',
-  롯데월드타워:
-    'https://images.unsplash.com/photo-1567954970774-58d6aa6c50dc?auto=format&fit=crop&q=80&w=400',
-  한라산:
-    'https://images.unsplash.com/photo-1740329289241-3adf04a8e3ed?auto=format&fit=crop&q=80&w=400',
-  후지산:
-    'https://images.unsplash.com/photo-1578637387939-43c525550085?auto=format&fit=crop&q=80&w=400',
-  에베레스트:
-    'https://images.unsplash.com/photo-1575819719798-83d97dd6949c?auto=format&fit=crop&q=80&w=400',
+const LANDMARK_IMAGES: Record<string, ImageSourcePropType> = {
+  남산타워: require('../assets/images/NamsanSeoulTower.png'),
+  롯데월드타워: require('../assets/images/lotte_tower.png'),
+  한라산: require('../assets/images/Hallasan.png'),
+  후지산: require('../assets/images/MountFuji.png'),
+  에베레스트: require('../assets/images/MountEverest.png'),
 };
 
 function safeNumber(value: number | null | undefined) {
@@ -63,6 +62,26 @@ function estimateCalories(record: HikingRecord) {
   const elevation = safeNumber(record.elevationGainM);
   const heartRate = safeNumber(record.avgHeartRate);
   return Math.round(distance * 55 + duration * 4.5 + elevation * 0.35 + Math.max(0, heartRate - 100) * 1.2);
+}
+
+function estimateSteps(record: HikingRecord) {
+  const savedSteps = safeNumber(record.steps);
+  if (savedSteps > 0) return Math.round(savedSteps);
+
+  const distance = safeNumber(record.distanceKm);
+  return Math.round(distance * 1400);
+}
+
+function formatCourseLabel(record: HikingRecord) {
+  const courseName = record.courseName?.trim();
+  const courseId = record.courseId?.trim();
+
+  if (courseName && courseId && !courseName.includes(courseId)) {
+    return `${courseName} · 경로 ${courseId}`;
+  }
+  if (courseName) return courseName;
+  if (courseId) return `경로 ${courseId}`;
+  return '코스 정보 없음';
 }
 
 function formatDuration(minutes: number) {
@@ -78,7 +97,13 @@ function formatShortDate(value: string | null) {
   if (!value) return '--/--';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '--/--';
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+  return date
+    .toLocaleDateString('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      month: 'numeric',
+      day: 'numeric',
+    })
+    .replace(/\s/g, '');
 }
 
 function formatFullDate(value: string | null) {
@@ -86,6 +111,7 @@ function formatFullDate(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '날짜 없음';
   return date.toLocaleDateString('ko-KR', {
+    timeZone: 'Asia/Seoul',
     year: 'numeric',
     month: 'long',
     day: 'numeric',
@@ -193,17 +219,15 @@ export default function AchievementScreen() {
   const badgeStats = useMemo(() => createBadgeStats(records), [records]);
 
   const stats = useMemo(() => {
-    const heartRates = records
-      .map((record) => safeNumber(record.avgHeartRate))
-      .filter((value) => value > 0);
+    const totalSteps = records.reduce(
+      (sum, record) => sum + estimateSteps(record),
+      0,
+    );
 
     return {
       ...badgeStats,
       count: badgeStats.recordCount,
-      averageHeartRate:
-        heartRates.length > 0
-          ? Math.round(heartRates.reduce((sum, value) => sum + value, 0) / heartRates.length)
-          : 0,
+      totalSteps,
     };
   }, [badgeStats, records]);
 
@@ -224,7 +248,7 @@ export default function AchievementScreen() {
 
   const selectedLandmark =
     LANDMARKS.find((mark) => mark.name === selectedLandmarkName) ?? recommendedLandmark;
-  const chartMax = Math.max(stats.totalElevationM, selectedLandmark.height, 1) * 1.25;
+  const chartMax = Math.max(stats.totalElevationM, selectedLandmark.height, 1) * CHART_SCALE_PADDING;
   const myBarTarget = Math.max(2, (stats.totalElevationM / chartMax) * CHART_HEIGHT);
   const landmarkBarTarget = Math.max(2, (selectedLandmark.height / chartMax) * CHART_HEIGHT);
   const recentRecords = records.slice(0, 3);
@@ -253,6 +277,7 @@ export default function AchievementScreen() {
   function renderRecord(record: HikingRecord, dense = false) {
     const elevation = safeNumber(record.elevationGainM);
     const calories = safeNumber(record.calories ?? estimateCalories(record));
+    const steps = estimateSteps(record);
 
     return (
       <View key={record.id} style={[styles.hikeItem, dense && styles.hikeItemDense]}>
@@ -264,10 +289,10 @@ export default function AchievementScreen() {
             {record.mountainName || '이름 없는 산행'}
           </Text>
           <Text style={styles.hikeCourse} numberOfLines={1}>
-            {record.courseName || '코스 정보 없음'}
+            {formatCourseLabel(record)}
           </Text>
           <Text style={styles.hikeDetail} numberOfLines={1}>
-            {formatDuration(safeNumber(record.durationMinutes))} · {safeNumber(record.distanceKm).toFixed(1)}km · {calories.toLocaleString()}kcal
+            {formatDuration(safeNumber(record.durationMinutes))} · {safeNumber(record.distanceKm).toFixed(1)}km · {steps.toLocaleString()}걸음 · {calories.toLocaleString()}kcal
           </Text>
         </View>
         <View style={styles.hikeRight}>
@@ -426,9 +451,9 @@ export default function AchievementScreen() {
                 <View style={[styles.barTrack, { height: CHART_HEIGHT }]}>
                   <Animated.View style={[styles.landmarkBar, { height: landmarkBarAnim }]}>
                     <Image
-                      source={{ uri: LANDMARK_IMAGES[selectedLandmark.name] }}
+                      source={LANDMARK_IMAGES[selectedLandmark.name]}
                       style={styles.landmarkImage}
-                      resizeMode="cover"
+                      resizeMode="contain"
                     />
                   </Animated.View>
                 </View>
@@ -529,14 +554,14 @@ export default function AchievementScreen() {
             </View>
           </View>
 
-          {stats.averageHeartRate > 0 ? (
+          {stats.totalSteps > 0 ? (
             <View style={styles.heartCard}>
               <View style={styles.heartIcon}>
-                <Ionicons name="heart" size={20} color="#e11d48" />
+                <Ionicons name="footsteps" size={20} color="#2563eb" />
               </View>
               <View>
-                <Text style={styles.heartLabel}>평균 심박수</Text>
-                <Text style={styles.heartValue}>{stats.averageHeartRate} bpm</Text>
+                <Text style={styles.heartLabel}>총 걸음 수</Text>
+                <Text style={styles.heartValue}>{stats.totalSteps.toLocaleString()} 걸음</Text>
               </View>
             </View>
           ) : null}
@@ -783,7 +808,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'flex-end',
-    gap: 40,
+    gap: CHART_GAP,
     marginTop: 18,
     marginBottom: 8,
   },
@@ -791,13 +816,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'flex-end',
-    gap: 40,
+    gap: CHART_GAP,
     borderBottomWidth: 2,
     borderBottomColor: '#f3f4f6',
   },
-  barCol: { alignItems: 'center', width: 80 },
+  barCol: { alignItems: 'center', width: CHART_BAR_WIDTH },
   barTopLabel: { fontSize: 13, fontWeight: '700', marginBottom: 6 },
-  barTrack: { width: 80, justifyContent: 'flex-end', alignItems: 'stretch' },
+  barTrack: { width: CHART_BAR_WIDTH, justifyContent: 'flex-end', alignItems: 'stretch' },
   myBar: {
     width: '100%',
     backgroundColor: '#22c55e',
@@ -806,17 +831,22 @@ const styles = StyleSheet.create({
   },
   landmarkBar: {
     width: '100%',
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f8fafc',
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
     overflow: 'hidden',
   },
-  landmarkImage: { width: '100%', height: '100%' },
+  landmarkImage: {
+    width: '120%',
+    height: '108%',
+    alignSelf: 'center',
+    marginTop: -6,
+  },
   chartNameRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'flex-end',
-    gap: 40,
+    gap: CHART_GAP,
     marginTop: 8,
   },
   barBottomLabel: {
@@ -825,7 +855,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 10,
     marginBottom: 14,
-    width: 80,
+    width: CHART_BAR_WIDTH,
   },
   landmarkList: { gap: 6, marginTop: 4 },
   landmarkItem: {
@@ -893,7 +923,7 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ffe4e6',
+    backgroundColor: '#dbeafe',
   },
   heartLabel: { fontSize: 12, color: '#6b7280', fontWeight: '600' },
   heartValue: { fontSize: 18, color: '#111827', fontWeight: '800', marginTop: 2 },

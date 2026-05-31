@@ -29,8 +29,10 @@ import {
 } from "react-native";
 import type { CourseParams, RootTabParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
+import { useWatchHealth } from "../contexts/WatchHealthContext";
 import {
   apiService,
+  type HealthData,
   type PhotoSpot,
   type UnifiedMountainNode,
 } from "../data/api";
@@ -152,6 +154,7 @@ export default function LiveMapScreen() {
   const navigation = useNavigation<LiveMapNavProp>();
   const route = useRoute<LiveMapRouteProp>();
   const { isGuest, token, user } = useAuth();
+  const { latestData: latestWatchData } = useWatchHealth();
 
   /* 코스 파라미터 (홈에서 전달, 없으면 기본값) */
   const params = route.params as CourseParams | undefined;
@@ -166,6 +169,9 @@ export default function LiveMapScreen() {
   /* ── 실시간 데이터 상태 (알고리즘 연동) ── */
   const [loading, setLoading] = useState(false);
   const [savingRecord, setSavingRecord] = useState(false);
+  const [activeHikingRecordId, setActiveHikingRecordId] = useState<
+    number | null
+  >(null);
   const [remainingDist, setRemainingDist] = useState(initialDistanceKm);
   const [totalRouteDistanceKm, setTotalRouteDistanceKm] =
     useState(initialDistanceKm);
@@ -275,8 +281,20 @@ export default function LiveMapScreen() {
       {
         text: "종료",
         style: "destructive",
-        onPress: () => {
+        onPress: async () => {
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          const recordId = activeHikingRecordIdRef.current;
+          if (recordId) {
+            try {
+              await apiService.cancelHikingRecord(recordId, token);
+            } catch (error) {
+              console.warn("[LiveMap] Failed to cancel active record:", error);
+            } finally {
+              activeHikingRecordIdRef.current = null;
+              activeHikingRecordKeyRef.current = null;
+              setActiveHikingRecordId(null);
+            }
+          }
           // 상태 초기화
           setRoutePath([]);
           setStartPoint(null);
@@ -335,6 +353,12 @@ export default function LiveMapScreen() {
   const analysisOpacity = useRef(new Animated.Value(1)).current;
   const unifiedChunkTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
   const hikeStartedAt = useRef(Date.now());
+  const activeHikingRecordIdRef = useRef<number | null>(null);
+  const activeHikingRecordKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeHikingRecordIdRef.current = activeHikingRecordId;
+  }, [activeHikingRecordId]);
 
   /* ── 실제 알고리즘 데이터 로드 ── */
   useEffect(() => {
@@ -346,6 +370,72 @@ export default function LiveMapScreen() {
     setIsPaused(false);
     hikeStartedAt.current = Date.now();
   }, [courseId, initialDistanceKm, initialMinutes]);
+
+  useEffect(() => {
+    if (!courseId || !user || isGuest) {
+      activeHikingRecordKeyRef.current = null;
+      setActiveHikingRecordId(null);
+      return;
+    }
+
+    const currentUser = user;
+    const nextKey = `${currentUser.id}:${courseId}`;
+    if (activeHikingRecordKeyRef.current === nextKey) return;
+
+    const previousRecordId = activeHikingRecordIdRef.current;
+    activeHikingRecordKeyRef.current = nextKey;
+    activeHikingRecordIdRef.current = null;
+    setActiveHikingRecordId(null);
+
+    let isMounted = true;
+
+    async function startActiveHikingRecord() {
+      try {
+        if (previousRecordId) {
+          apiService.cancelHikingRecord(previousRecordId, token).catch(
+            (error) => {
+              console.warn(
+                "[LiveMap] Failed to cancel previous active record:",
+                error,
+              );
+            },
+          );
+        }
+
+        const record = await apiService.startHikingRecord(
+          {
+            userId: currentUser.id,
+            mountainName: mountainName || "선택한 산",
+            courseId,
+            courseName,
+          },
+          token,
+        );
+
+        if (!isMounted) return;
+        activeHikingRecordIdRef.current = record.id;
+        setActiveHikingRecordId(record.id);
+      } catch (error) {
+        if (!isMounted) return;
+        activeHikingRecordKeyRef.current = null;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "산행 시작 기록을 만들지 못했습니다.";
+        console.error("[LiveMap] Failed to start active record:", error);
+        Alert.alert(
+          "산행 시작 기록 실패",
+          `${message}\n\n워치 데이터와 이번 산행 기록이 자동 연결되지 않을 수 있어요.`,
+        );
+      }
+    }
+
+    startActiveHikingRecord();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [courseId, courseName, isGuest, mountainName, token, user]);
 
   useEffect(() => {
     if (courseId) {
@@ -659,6 +749,56 @@ export default function LiveMapScreen() {
     Math.round(heartRate),
   );
 
+  async function getHealthSummaryForRecord() {
+    let recentHealthData: HealthData[] = [];
+
+    if (token) {
+      try {
+        recentHealthData = await apiService.getRecentHealthData(token, 60);
+      } catch (error) {
+        console.warn("[LiveMap] Failed to fetch recent health data:", error);
+      }
+    }
+
+    const hikeStartTime = hikeStartedAt.current - 5000;
+    const isCurrentHikeData = (item: HealthData | null) => {
+      if (!item) return false;
+      if (!item.measuredAt) return true;
+      const measuredTime = new Date(item.measuredAt).getTime();
+      return Number.isNaN(measuredTime) || measuredTime >= hikeStartTime;
+    };
+    const currentHikeHealthData = recentHealthData.filter(isCurrentHikeData);
+    const latestHealthData = isCurrentHikeData(latestWatchData)
+      ? latestWatchData
+      : currentHikeHealthData[0] ?? null;
+    const heartRates = currentHikeHealthData
+      .map((item) => item.heartRate)
+      .filter((value): value is number => Number.isFinite(value));
+    const averageHeartRate =
+      heartRates.length > 0
+        ? Math.round(
+            heartRates.reduce((sum, value) => sum + value, 0) /
+              heartRates.length,
+          )
+        : Math.round(latestHealthData?.heartRate ?? heartRate);
+    const maxSteps = Math.max(
+      0,
+      ...currentHikeHealthData.map((item) => item.steps ?? 0),
+      latestHealthData?.steps ?? 0,
+    );
+    const maxCalories = Math.max(
+      0,
+      ...currentHikeHealthData.map((item) => item.calories ?? 0),
+      latestHealthData?.calories ?? 0,
+    );
+
+    return {
+      avgHeartRate: averageHeartRate,
+      steps: maxSteps > 0 ? Math.round(maxSteps) : null,
+      calories: maxCalories > 0 ? Math.round(maxCalories) : estimatedCalories,
+    };
+  }
+
   async function handleSaveHikingRecord() {
     if (!user || isGuest) {
       Alert.alert(
@@ -672,21 +812,39 @@ export default function LiveMapScreen() {
 
     try {
       setSavingRecord(true);
-      await apiService.createHikingRecord(
-        {
-          userId: user.id,
-          mountainName: mountainName || "선택한 산",
-          courseId: courseId ?? null,
-          courseName,
-          durationMinutes: estimatedDurationMinutes,
-          distanceKm: totalRouteDistanceKm,
-          calories: estimatedCalories,
-          avgHeartRate: Math.round(heartRate),
-          maxAltitude: elevationGainM,
-          elevationGainM,
-        },
-        token,
-      );
+      const healthSummary = await getHealthSummaryForRecord();
+      const recordPayload = {
+        durationMinutes: estimatedDurationMinutes,
+        distanceKm: totalRouteDistanceKm,
+        calories: healthSummary.calories,
+        steps: healthSummary.steps,
+        avgHeartRate: healthSummary.avgHeartRate,
+        maxAltitude: elevationGainM,
+        elevationGainM,
+      };
+      const activeRecordId = activeHikingRecordIdRef.current;
+
+      if (activeRecordId) {
+        await apiService.finishHikingRecord(
+          activeRecordId,
+          recordPayload,
+          token,
+        );
+        activeHikingRecordIdRef.current = null;
+        activeHikingRecordKeyRef.current = null;
+        setActiveHikingRecordId(null);
+      } else {
+        await apiService.createHikingRecord(
+          {
+            ...recordPayload,
+            userId: user.id,
+            mountainName: mountainName || "선택한 산",
+            courseId: courseId ?? null,
+            courseName,
+          },
+          token,
+        );
+      }
 
       Alert.alert("산행 기록 저장", "이번 산행이 성취도에 반영됐어요.", [
         { text: "확인", onPress: () => navigation.navigate("성취도") },
