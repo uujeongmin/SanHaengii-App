@@ -30,8 +30,12 @@ import {
   useWatchHealth,
   type WatchHealthStatus,
 } from "../contexts/WatchHealthContext";
-import { DEFAULT_MOUNTAIN_IMAGE, apiService } from "../data/api";
-import { type Mountain, type MountainCourse } from "../data/mountains";
+import {
+  apiService,
+  DEFAULT_MOUNTAIN_IMAGE,
+  type Mountain,
+  type MountainCourse,
+} from "../data/api";
 
 type HomeNavProp = CompositeNavigationProp<
   BottomTabNavigationProp<RootTabParamList, "홈">,
@@ -76,7 +80,9 @@ function formatKoreanTime(value: string | null | undefined) {
 }
 
 function formatWatchNumber(value: number | null | undefined, suffix: string) {
-  return Number.isFinite(value) ? `${Math.round(Number(value))}${suffix}` : "--";
+  return Number.isFinite(value)
+    ? `${Math.round(Number(value))}${suffix}`
+    : "--";
 }
 
 function formatWatchMeasuredAt(value: string | null | undefined) {
@@ -98,7 +104,8 @@ function getWatchStatusText(
   if (status === "syncing") return "스마트워치 데이터를 연결하는 중입니다.";
   if (status === "live") return "스마트워치 데이터가 실시간 반영 중입니다.";
   if (status === "empty") return "워치에서 전송된 데이터가 아직 없습니다.";
-  if (status === "error") return error ?? "스마트워치 데이터를 불러오지 못했습니다.";
+  if (status === "error")
+    return error ?? "스마트워치 데이터를 불러오지 못했습니다.";
   return "스마트워치 연결을 준비하고 있습니다.";
 }
 
@@ -196,6 +203,7 @@ export default function HomeScreen() {
       distance: course.distance,
       time: course.time,
       elevation: course.elevation,
+      img: course.img,
     };
     navigation.navigate("내비게이션", params);
   }
@@ -517,7 +525,7 @@ export default function HomeScreen() {
                           </Text>
                         </View>
                         <View style={styles.tagsRow}>
-                          {safeTags.slice(0, 2).map((tag) => (
+                          {safeTags.slice(0, 2).map((tag: string) => (
                             <View key={tag} style={styles.tagBadge}>
                               <Text style={styles.tagText}>{tag}</Text>
                             </View>

@@ -1,4 +1,4 @@
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   NaverMapMarkerOverlay,
   NaverMapMultiPathOverlay,
@@ -11,6 +11,8 @@ import {
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import type { RouteProp } from "@react-navigation/native";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import * as Location from "expo-location";
+import * as SecureStore from "expo-secure-store";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -106,6 +108,71 @@ function estimateCalories(
   );
 }
 
+/* ── 지도 마커 아이콘 (커스텀 뷰 비트맵) ── */
+const markerBubbleStyle = {
+  width: 36,
+  height: 36,
+  borderRadius: 18,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  borderWidth: 2,
+  borderColor: "#ffffff",
+};
+
+const MARKER_ICON_SETS = {
+  ionicons: Ionicons,
+  material: MaterialCommunityIcons,
+} as const;
+
+function MapMarkerIcon({
+  name,
+  color,
+  set = "ionicons",
+}: {
+  name: string;
+  color: string;
+  set?: keyof typeof MARKER_ICON_SETS;
+}) {
+  const IconSet = MARKER_ICON_SETS[set];
+  return (
+    <View
+      key={`${set}/${name}/${color}`}
+      collapsable={false}
+      style={[markerBubbleStyle, { backgroundColor: color }]}
+    >
+      <IconSet name={name as any} size={18} color="#ffffff" />
+    </View>
+  );
+}
+
+/* ── 포토스팟 정보창 (마커 위 말풍선) ── */
+function PhotoSpotInfoWindow({ spot }: { spot: PhotoSpot }) {
+  return (
+    <View
+      key={`info/${spot.spot}/${spot.address}`}
+      collapsable={false}
+      style={styles.infoWindowWrapper}
+    >
+      <View style={styles.infoWindowCard}>
+        <View style={styles.infoWindowHeader}>
+          <Ionicons name="camera" size={14} color="#8b5cf6" />
+          <Text style={styles.infoWindowTitle} numberOfLines={1}>
+            {spot.spot ?? "포토스팟"}
+          </Text>
+          <Ionicons name="close" size={14} color="#9ca3af" />
+        </View>
+        <Text style={styles.infoWindowAddress} numberOfLines={2}>
+          {spot.address ?? "주소 정보가 없습니다."}
+        </Text>
+      </View>
+      {/* 아래를 가리키는 말풍선 꼬리 */}
+      <View style={styles.infoWindowArrow} />
+      {/* 마커 아이콘 높이만큼 띄우는 투명 공간 */}
+      <View style={styles.infoWindowSpacer} />
+    </View>
+  );
+}
+
 /* ── 토글 스위치 컴포넌트 ── */
 interface ToggleSwitchProps {
   enabled: boolean;
@@ -184,13 +251,15 @@ export default function LiveMapScreen() {
   const [mapRegion, setMapRegion] = useState<Region | undefined>(undefined);
   const [startPoint, setStartPoint] = useState<MapCoord | null>(null);
   const [endPoint, setEndPoint] = useState<MapCoord | null>(null);
-  const [currentLocation, setCurrentLocation] = useState<MapCoord>({
-    latitude: 37.5665,
-    longitude: 126.978,
-  });
+  const [currentLocation, setCurrentLocation] = useState<MapCoord | null>(null);
+  const mapCamera = useRef<MapCoord | null>(null);
 
   // SNS 인기 조망점(포토스팟) 상태
   const [photoSpots, setPhotoSpots] = useState<PhotoSpot[]>([]);
+  // 사용자가 탭한 포토스팟 (이름·주소 정보 카드 표시용)
+  const [selectedPhotoSpot, setSelectedPhotoSpot] = useState<PhotoSpot | null>(
+    null,
+  );
 
   // 정적 기준 시간 및 동적 실시간 시간
   const initialMinutes = parseTimeToMinutes(params?.time);
@@ -204,13 +273,16 @@ export default function LiveMapScreen() {
   const [heartRate, setHeartRate] = useState(0); // bpm
   const [unifiedLoading, setUnifiedLoading] = useState(false);
 
+  /* ── 오프라인 지도 상태 ── */
+  const [isOfflineDownloading, setIsOfflineDownloading] = useState(false);
+  const [isMapSaved, setIsMapSaved] = useState(false);
+
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
   const [snsSpot, setSnsSpot] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
 
   /* ── 접기/펼치기 상태 ── */
-  const [isNotifCollapsed, setIsNotifCollapsed] = useState(false);
   const [isDashboardCollapsed, setIsDashboardCollapsed] = useState(false);
 
   /* ── 지도 컨트롤 상태 ── */
@@ -221,54 +293,186 @@ export default function LiveMapScreen() {
   const handleZoomIn = () => {
     setZoom((z) => {
       const newZoom = Math.min(z + 1, 21);
-      mapRef.current?.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: newZoom,
-      });
+      const target = mapCamera.current || currentLocation;
+      if (target) {
+        mapRef.current?.animateCameraTo({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          zoom: newZoom,
+        });
+      }
       return newZoom;
     });
   };
   const handleZoomOut = () => {
     setZoom((z) => {
       const newZoom = Math.max(z - 1, 5);
-      mapRef.current?.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: newZoom,
-      });
+      const target = mapCamera.current || currentLocation;
+      if (target) {
+        mapRef.current?.animateCameraTo({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          zoom: newZoom,
+        });
+      }
       return newZoom;
     });
   };
-  const handleRescanGPS = () => {
-    if (mapRef.current) {
-      mapRef.current.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: 16,
-      });
+  const handleRescanGPS = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("권한 필요", "위치 정보 접근 권한이 필요합니다.");
+        return;
+      }
+
+      let location = await Location.getLastKnownPositionAsync({});
+      if (!location) {
+        location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+      }
+
+      if (location) {
+        const newLoc = {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        };
+        setCurrentLocation(newLoc);
+
+        if (mapRef.current) {
+          mapRef.current.animateCameraTo({
+            latitude: newLoc.latitude,
+            longitude: newLoc.longitude,
+            zoom: 16,
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[LiveMap] Error rescanning GPS:", e);
+      Alert.alert(
+        "위치 오류",
+        "현재 위치를 가져올 수 없습니다. 에뮬레이터 설정(Location)을 확인해주세요.",
+      );
     }
   };
 
-  const isNotifCollapsedRef = useRef(isNotifCollapsed);
+  /**
+   * 코스 주변 지도를 오프라인용으로 저장합니다.
+   */
+  const handleDownloadOfflineMap = async () => {
+    if (routePath.length === 0) {
+      Alert.alert("알림", "저장할 등산 코스 정보가 없습니다.");
+      return;
+    }
+
+    try {
+      setIsOfflineDownloading(true);
+
+      // 1. 코스 전체가 보이도록 지도 영역 계산
+      const lats = routePath.map((p) => p.latitude);
+      const lngs = routePath.map((p) => p.longitude);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+
+      const centerLat = (minLat + maxLat) / 2;
+      const centerLng = (minLng + maxLng) / 2;
+
+      // 2. 카메라 이동 및 타일 캐싱 유도
+      if (mapRef.current) {
+        mapRef.current.animateCameraTo({
+          latitude: centerLat,
+          longitude: centerLng,
+          zoom: 14,
+        });
+
+        // 잠시 대기하여 타일이 로드되도록 함
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        // 3. 지도 타일 캐싱 유도
+        // 카메라를 이동시키면 SDK에서 자동으로 해당 영역의 타일을 다운로드하여 캐싱합니다.
+
+        // 4. 로컬 저장소에 저장 정보 기록
+        const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
+        const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+        let savedList = savedStr ? JSON.parse(savedStr) : [];
+
+        // 중복 확인
+        if (courseId && !savedList.find((c: any) => c.id === courseId)) {
+          savedList.push({
+            id: courseId,
+            title: courseName,
+            mountainId: mountainName,
+            difficulty: params?.difficulty || "중",
+            distance: params?.distance || "0km",
+            time: params?.time || "0분",
+            elevation: params?.elevation || "+0m",
+            img: params?.img || null, // 전달받은 이미지 URL 저장
+            path: routePath, // 오프라인 상세 화면에서 그리기 위해 경로 데이터 추가
+          });
+          await SecureStore.setItemAsync(
+            SAVED_MAPS_KEY,
+            JSON.stringify(savedList),
+          );
+        }
+
+        // 5. 저장 완료 처리
+        setIsMapSaved(true);
+        Alert.alert(
+          "오프라인 지도 저장",
+          "코스 주변의 지도 데이터가 캐시에 저장되었습니다. [마이페이지 > 저장된 지도]에서 확인할 수 있습니다.",
+        );
+      }
+    } catch (e) {
+      console.error("[Offline] Download failed:", e);
+      Alert.alert(
+        "저장 실패",
+        "지도 데이터를 저장하는 중 오류가 발생했습니다.",
+      );
+    } finally {
+      setIsOfflineDownloading(false);
+    }
+  };
+
   useEffect(() => {
-    isNotifCollapsedRef.current = isNotifCollapsed;
-  }, [isNotifCollapsed]);
+    handleRescanGPS();
+
+    let locationSubscription: Location.LocationSubscription | null = null;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") return;
+        locationSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 5000,
+            distanceInterval: 10,
+          },
+          (loc) => {
+            setCurrentLocation({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+            });
+          },
+        );
+      } catch (err) {
+        console.log("[LiveMap] watchPosition error:", err);
+      }
+    })();
+
+    return () => {
+      if (locationSubscription) {
+        locationSubscription.remove();
+      }
+    };
+  }, []);
 
   const isDashboardCollapsedRef = useRef(isDashboardCollapsed);
   useEffect(() => {
     isDashboardCollapsedRef.current = isDashboardCollapsed;
   }, [isDashboardCollapsed]);
-
-  const toggleNotifFold = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setIsNotifCollapsed(!isNotifCollapsed);
-  };
-
-  const toggleDashboardFold = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setIsDashboardCollapsed(!isDashboardCollapsed);
-  };
 
   const handlePauseResume = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -302,6 +506,7 @@ export default function LiveMapScreen() {
           setRemainingDist(0);
           setDynamicEta(0);
           setUnifiedPathPartChunks([]);
+          setIsMapSaved(false);
           // 필요한 경우 navigation.goBack() 또는 다른 처리가 가능하지만,
           // 요청에 따라 로컬 상태만 초기화하여 맵에 남게 함.
         },
@@ -310,22 +515,6 @@ export default function LiveMapScreen() {
   };
 
   /* ── 제스처 처리 (PanResponder) ── */
-  const notifPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => isNotifCollapsedRef.current,
-      onMoveShouldSetPanResponder: (_, gs) => Math.abs(gs.dy) > 20,
-      onPanResponderRelease: (_, gs) => {
-        if (gs.dy < -20) {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          setIsNotifCollapsed(true);
-        } else if (Math.abs(gs.dx) < 5 && Math.abs(gs.dy) < 5) {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          setIsNotifCollapsed((prev) => !prev);
-        }
-      },
-    }),
-  ).current;
-
   const dashboardPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => isDashboardCollapsedRef.current,
@@ -368,6 +557,7 @@ export default function LiveMapScreen() {
     setDynamicEta(initialMinutes);
     setTimeSaved(0);
     setIsPaused(false);
+    setIsMapSaved(false);
     hikeStartedAt.current = Date.now();
   }, [courseId, initialDistanceKm, initialMinutes]);
 
@@ -448,16 +638,16 @@ export default function LiveMapScreen() {
     let mounted = true;
     async function loadPhotoSpots() {
       try {
-        const rows = await apiService.getPhotoSpots();
+        const spots = await apiService.getPhotoSpots();
 
         if (!mounted) return;
 
-        const spots = (rows || []).filter(
+        const filteredSpots = (spots || []).filter(
           (s: PhotoSpot) =>
             Number.isFinite(s.latitude) && Number.isFinite(s.longitude),
         );
 
-        setPhotoSpots(spots);
+        setPhotoSpots(filteredSpots);
       } catch (e) {
         console.error("[LiveMap] Failed to load photo spots:", e);
         setPhotoSpots([]);
@@ -501,10 +691,18 @@ export default function LiveMapScreen() {
           latitude: p.lat,
           longitude: p.lng,
         }));
-        setRoutePath(mappedPath);
-        setStartPoint(mappedPath[0]);
+
+        // 출발 지점을 사용자의 현위치로 설정 (없으면 경로의 첫 지점)
+        const finalStartPoint = currentLocation || mappedPath[0];
+        setStartPoint(finalStartPoint);
         setEndPoint(mappedPath[mappedPath.length - 1]);
-        setCurrentLocation(mappedPath[0]); // 시뮬레이션 시작 위치
+
+        // 사용자의 현위치에서 코스 시작점까지의 경로를 자연스럽게 이어줌
+        if (currentLocation) {
+          setRoutePath([currentLocation, ...mappedPath]);
+        } else {
+          setRoutePath(mappedPath);
+        }
       }
     } catch (error) {
       console.error("[LiveMap] Failed to fetch real route data:", error);
@@ -570,11 +768,6 @@ export default function LiveMapScreen() {
       const boundsRegion = createRegionFromNodes(result.nodes);
       if (boundsRegion) {
         setMapRegion(boundsRegion);
-      }
-
-      if (pathParts.length > 0 && routePath.length === 0) {
-        const firstCoord = pathParts[0].coords[0];
-        setCurrentLocation(firstCoord);
       }
 
       setUnifiedLoading(false);
@@ -670,7 +863,6 @@ export default function LiveMapScreen() {
   useEffect(() => {
     if (!dynamicAnalysis || routePath.length === 0) return;
 
-    let pathIndex = 0;
     const interval = setInterval(() => {
       if (isPaused) return;
 
@@ -701,12 +893,6 @@ export default function LiveMapScreen() {
         );
 
         setDynamicEta(nextDist > 0 ? Math.max(1, calculatedEta) : 0);
-
-        // 지도 상의 현재 위치 업데이트 (시뮬레이션)
-        if (pathIndex < routePath.length - 1) {
-          pathIndex++;
-          setCurrentLocation(routePath[pathIndex]);
-        }
 
         return nextDist;
       });
@@ -866,10 +1052,18 @@ export default function LiveMapScreen() {
       <NaverMapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        camera={mapRegion ? undefined : { ...currentLocation, zoom }}
+        camera={
+          mapRegion
+            ? undefined
+            : mapCamera.current
+              ? { ...mapCamera.current, zoom }
+              : currentLocation
+                ? { ...currentLocation, zoom }
+                : undefined
+        }
         region={mapRegion}
         animationDuration={500}
-        mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
+        mapPadding={{ top: 130, right: 20, bottom: 100, left: 20 }}
         layerGroups={{
           BUILDING: true,
           TRAFFIC: false,
@@ -881,6 +1075,15 @@ export default function LiveMapScreen() {
         isShowScaleBar={true}
         isShowZoomControls={false}
         isShowLocationButton={false}
+        onCameraChanged={(e: any) => {
+          mapCamera.current = {
+            latitude: e.latitude,
+            longitude: e.longitude,
+          };
+          if (e.reason !== 0) {
+            setZoom(e.zoom);
+          }
+        }}
       >
         {/* 통합 경로 네트워크 표시 */}
         {unifiedPathPartChunks.map((pathParts, index) => (
@@ -906,38 +1109,45 @@ export default function LiveMapScreen() {
             zIndex={5}
           />
         )}
-
         {/* 현재 위치 마커 */}
-        <NaverMapMarkerOverlay
-          latitude={currentLocation.latitude}
-          longitude={currentLocation.longitude}
-          width={24}
-          height={24}
-          image={require("../assets/images/favicon.png")} // 임시 아이콘
-          caption={{ text: "현위치" }}
-          subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
-        />
-
+        {currentLocation && (
+          <NaverMapMarkerOverlay
+            latitude={currentLocation.latitude ?? 0}
+            longitude={currentLocation.longitude ?? 0}
+            width={36}
+            height={36}
+            caption={{ text: "현위치" }}
+            subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
+          >
+            <MapMarkerIcon name="navigate" color="#2563eb" />
+          </NaverMapMarkerOverlay>
+        )}
         {/* 출발/도착 마커 */}
         {startPoint && (
           <NaverMapMarkerOverlay
             latitude={startPoint.latitude}
             longitude={startPoint.longitude}
-            width={30}
-            height={30}
-            image={{ symbol: "green" }}
+            width={36}
+            height={36}
             caption={{ text: "출발" }}
-          />
+          >
+            <MapMarkerIcon name="flag" color="#16a34a" />
+          </NaverMapMarkerOverlay>
         )}
         {endPoint && (
           <NaverMapMarkerOverlay
             latitude={endPoint.latitude}
             longitude={endPoint.longitude}
-            width={30}
-            height={30}
-            image={{ symbol: "red" }}
+            width={36}
+            height={36}
             caption={{ text: "도착" }}
-          />
+          >
+            <MapMarkerIcon
+              name="flag-checkered"
+              color="#dc2626"
+              set="material"
+            />
+          </NaverMapMarkerOverlay>
         )}
 
         {/* SNS 포토스팟 마커 (토글로 제어) */}
@@ -948,13 +1158,30 @@ export default function LiveMapScreen() {
               key={`sns-spot-${spot.spot}-${index}`}
               latitude={spot.latitude}
               longitude={spot.longitude}
-              width={28}
-              height={28}
-              image={require("../assets/images/photo_spot_marker.png")}
+              width={36}
+              height={36}
               caption={{ text: spot.spot ?? "포토스팟" }}
               zIndex={12}
-            />
+              onTap={() => setSelectedPhotoSpot(spot)}
+            >
+              <MapMarkerIcon name="camera" color="#8b5cf6" />
+            </NaverMapMarkerOverlay>
           ))}
+
+        {/* 포토스팟 정보창 (탭한 마커 바로 위에 표시) */}
+        {selectedPhotoSpot && (
+          <NaverMapMarkerOverlay
+            latitude={selectedPhotoSpot.latitude}
+            longitude={selectedPhotoSpot.longitude}
+            width={220}
+            height={132}
+            anchor={{ x: 0.5, y: 1 }}
+            zIndex={40}
+            onTap={() => setSelectedPhotoSpot(null)}
+          >
+            <PhotoSpotInfoWindow spot={selectedPhotoSpot} />
+          </NaverMapMarkerOverlay>
+        )}
       </NaverMapView>
 
       <View style={styles.overlay} pointerEvents="none" />
@@ -973,6 +1200,25 @@ export default function LiveMapScreen() {
               {courseName}
             </Text>
           </View>
+
+          {/* 오프라인 다운로드 버튼 추가 */}
+          {courseId && (
+            <TouchableOpacity
+              style={styles.offlineBtn}
+              onPress={handleDownloadOfflineMap}
+              disabled={isOfflineDownloading}
+            >
+              {isOfflineDownloading ? (
+                <ActivityIndicator size="small" color="#3b82f6" />
+              ) : (
+                <Ionicons
+                  name={isMapSaved ? "cloud-done" : "cloud-download"}
+                  size={20}
+                  color={isMapSaved ? "#22c55e" : "#3b82f6"}
+                />
+              )}
+            </TouchableOpacity>
+          )}
         </View>
 
         <TouchableOpacity
@@ -1108,7 +1354,10 @@ export default function LiveMapScreen() {
                   </View>
                   <ToggleSwitch
                     enabled={snsSpot}
-                    onChange={setSnsSpot}
+                    onChange={(v) => {
+                      setSnsSpot(v);
+                      if (!v) setSelectedPhotoSpot(null);
+                    }}
                     activeColor="#9333ea"
                   />
                 </View>
@@ -1195,13 +1444,8 @@ export default function LiveMapScreen() {
                     />
                     <Text style={styles.infoText}>
                       회원님의 <Text style={styles.infoTextBold}>현위치</Text>
-                      에서 심박수(
-                      {heartRate === 0 ? "(-)" : Math.round(heartRate)}
-                      bpm)와 페이스(
-                      {currentPace.toFixed(1)}km/h)를 반영하여{" "}
-                      <Text style={styles.infoTextBold}>
-                        실제 알고리즘(Tobler){" "}
-                      </Text>
+                      에서 심박수와 페이스를 반영하여{" "}
+                      <Text style={styles.infoTextBold}>알고리즘(Tobler) </Text>
                       에 따른 도착 시간을 실시간으로 계산합니다.{" "}
                       {timeSaved > 0 && (
                         <Text style={styles.infoTextBold}>
@@ -1294,6 +1538,55 @@ export default function LiveMapScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#111827" },
+  infoWindowWrapper: {
+    width: 220,
+    height: 132,
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  infoWindowCard: {
+    width: "100%",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  infoWindowHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  infoWindowTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  infoWindowAddress: {
+    fontSize: 12,
+    color: "#6b7280",
+    lineHeight: 17,
+  },
+  infoWindowArrow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 9,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderTopColor: "#ffffff",
+    marginTop: -1,
+  },
+  infoWindowSpacer: {
+    height: 42,
+  },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(10,15,30,0.15)",
@@ -1328,6 +1621,10 @@ const styles = StyleSheet.create({
     marginBottom: 1,
   },
   routeLabelText: { fontSize: 13, color: "#606267", fontWeight: "500" },
+  offlineBtn: {
+    padding: 4,
+    marginLeft: 4,
+  },
   sosButton: {
     width: 48,
     height: 48,
@@ -1352,48 +1649,6 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   loadingText: { color: "#ffffff", marginTop: 12, fontWeight: "600" },
-  notifCard: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    backgroundColor: "rgba(255,255,255,0.97)",
-    borderRadius: 20,
-    padding: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    zIndex: 20,
-    elevation: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-  },
-  notifCardHidden: { pointerEvents: "none" },
-  notifIconWrap: {
-    width: 44,
-    height: 44,
-    backgroundColor: "#f3e8ff",
-    borderRadius: 13,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  notifTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 2,
-  },
-  aiTag: {
-    backgroundColor: "#f3e8ff",
-    borderRadius: 99,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  aiTagText: { fontSize: 11, fontWeight: "700", color: "#9333ea" },
-  notifDist: { fontSize: 11, color: "#9ca3af", fontWeight: "500" },
-  notifTitle: { fontSize: 13, fontWeight: "700", color: "#111827" },
-  notifDesc: { fontSize: 11, color: "#6b7280", marginTop: 1 },
   metaBadgeGroup: {
     position: "absolute",
     right: 16,
@@ -1597,12 +1852,6 @@ const styles = StyleSheet.create({
     color: "#9ca3af",
     textAlign: "center",
     paddingHorizontal: 24,
-  },
-  notifTouchable: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
   },
   collapsedDashboardRow: {
     flexDirection: "row",

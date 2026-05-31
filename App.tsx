@@ -18,7 +18,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  View
+  View,
 } from "react-native";
 
 import {
@@ -27,16 +27,19 @@ import {
   useAuth,
 } from "./contexts/AuthContext";
 import { WatchHealthProvider } from "./contexts/WatchHealthContext";
+import { MountainCourse } from "./data/api";
 import AchievementScreen from "./screens/AchievementScreen";
 import AllRoutesScreen from "./screens/AllRoutesScreen";
 import HomeScreen from "./screens/HomeScreen";
 import LiveMapScreen from "./screens/LiveMapScreen";
 import LoginScreen from "./screens/LoginScreen";
 import MountainCoursesScreen from "./screens/MountainCoursesScreen";
+import OfflineMapDetailScreen from "./screens/OfflineMapDetailScreen";
 import ProfileScreen from "./screens/ProfileScreen";
 import ProfileSetupScreen from "./screens/ProfileSetupScreen";
 import RouteDetailScreen from "./screens/RouteDetailScreen";
 import SafetyScreen from "./screens/SafetyScreen";
+import SavedMapsScreen from "./screens/SavedMapsScreen";
 
 /* ── 코스 파라미터 타입 (홈 → 내비게이션으로 전달) ── */
 export interface CourseParams {
@@ -47,6 +50,7 @@ export interface CourseParams {
   distance: string;
   time: string;
   elevation: string;
+  img?: string;
 }
 
 /* ── 네비게이션 타입 ── */
@@ -58,6 +62,8 @@ export type RootStackParamList = {
   MountainCourses: { mountainId: string };
   Profile: undefined;
   RouteDetail: { recordId: string };
+  SavedMaps: undefined;
+  OfflineMapDetail: { course: MountainCourse & { path?: any[] } };
 };
 
 export type RootTabParamList = {
@@ -148,6 +154,16 @@ function AppNavigator() {
         <Stack.Screen
           name="RouteDetail"
           component={RouteDetailScreen}
+          options={{ animation: "slide_from_right" }}
+        />
+        <Stack.Screen
+          name="SavedMaps"
+          component={SavedMapsScreen}
+          options={{ animation: "slide_from_right" }}
+        />
+        <Stack.Screen
+          name="OfflineMapDetail"
+          component={OfflineMapDetailScreen}
           options={{ animation: "slide_from_right" }}
         />
       </Stack.Navigator>

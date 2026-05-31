@@ -1,13 +1,30 @@
 import { Platform } from "react-native";
-import {
-  Mountain,
-  MOUNTAIN_COURSES,
-  MountainCourse,
-  MOUNTAINS,
-} from "./mountains";
 
-export const DEV_TEST_TOKEN =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
+export interface MountainCourse {
+  id: string;
+  mountainId: string;
+  title: string;
+  desc: string;
+  img: string;
+  tags: string[];
+  distance: string;
+  time: string;
+  difficulty: "하" | "중" | "상";
+  elevation: string;
+  startPoint: string;
+  highlights: string[];
+  elevationProfile: number[];
+}
+
+export interface Mountain {
+  id: string;
+  name: string;
+  region: string;
+  altitude: number;
+  description: string;
+  img: string;
+  courseCount: number;
+}
 
 const LOCAL_TRAIL_API_BASE_URL =
   Platform.OS === "android" ? "http://10.0.2.2:5001" : "http://localhost:5001";
@@ -36,13 +53,8 @@ export const BASE_URL = DATA_API_BASE_URL;
 
 const RAILWAY_TABLE_PAGE_SIZE = 1000;
 const COURSE_DISPLAY_LIMIT = 200;
-export const DEFAULT_MOUNTAIN_IMAGE =
-  MOUNTAINS[0]?.img ??
+const DEFAULT_MOUNTAIN_IMAGE =
   "https://images.unsplash.com/photo-1685330186861-278ae211fd65?auto=format&fit=crop&q=80&w=800";
-const DEFAULT_COURSE_IMAGE =
-  MOUNTAIN_COURSES[0]?.img ??
-  "https://images.unsplash.com/photo-1685330186861-278ae211fd65?auto=format&fit=crop&q=80&w=800";
-
 export interface Coordinate {
   lat: number;
   lng: number;
@@ -141,6 +153,7 @@ interface RailwayResponse<T> {
 interface SeoulMountainPathRow {
   id: number;
   mountain_name: string | null;
+  image_url?: string | null;
   difficulty?: string | null;
   uptime?: number | null;
   downtime?: number | null;
@@ -327,7 +340,10 @@ function normalizeHikingRecord(row: any): HikingRecord {
     avgHeartRate: toNullableNumber(row.avgHeartRate ?? row.avg_heart_rate),
     maxAltitude,
     elevationGainM: toNullableNumber(
-      row.elevationGainM ?? row.elevation_gain_m ?? row.elevation_gain ?? maxAltitude,
+      row.elevationGainM ??
+        row.elevation_gain_m ??
+        row.elevation_gain ??
+        maxAltitude,
     ),
     createdAt: row.createdAt ?? row.created_at ?? null,
     startedAt: row.startedAt ?? row.started_at ?? null,
@@ -625,15 +641,15 @@ function formatEta(durationSec: number): string {
 }
 
 function getMountainNameFromId(mountainId: string): string {
-  const staticMountain = MOUNTAINS.find(
-    (mountain) => mountain.id === mountainId,
-  );
-  return staticMountain?.name ?? mountainId;
+  // 백엔드 데이터에 의존하므로 로컬 매핑을 제거합니다.
+  // (필요 시 API에서 조인하여 가져오는 구조로 변경해야 함)
+  return mountainId;
 }
 
 function normalizeRailwayCourse(
   row: SeoulMountainPathRow,
   mountainId: string,
+  mountainImg?: string,
 ): MountainCourse {
   const id = String(row.id);
   const mountainName = cleanText(
@@ -660,7 +676,7 @@ function normalizeRailwayCourse(
     mountainId,
     title: `경로 ${id}`,
     desc: `${mountainName}의 등산 경로입니다.`,
-    img: DEFAULT_COURSE_IMAGE,
+    img: cleanText(mountainImg || row.image_url),
     tags,
     distance,
     time: formatMinutes(durationMinutes),
@@ -1333,19 +1349,10 @@ export const apiService = {
 
       const mountainsByName = new Map<string, Mountain>();
 
-      MOUNTAINS.forEach((mountain) => {
-        const railwayCourseCount = courseCounts.get(mountain.name);
-        if (railwayCourseCount === undefined) return;
-
-        mountainsByName.set(mountain.name, {
-          ...mountain,
-          courseCount: toDisplayCourseCount(railwayCourseCount),
-        });
-      });
-
+      // 1. 서버(DB)에서 가져온 데이터를 최우선으로 매핑합니다.
       rows.forEach((row) => {
         const name = normalizeMountainKey(row.mountain_name);
-        if (!name) return;
+        if (!name || mountainsByName.has(name)) return;
 
         const courseCount = courseCounts.get(name) ?? 0;
         if (courseCount <= 0) return;
@@ -1365,7 +1372,9 @@ export const apiService = {
         );
       });
 
-      cachedMountains = Array.from(mountainsByName.values());
+      cachedMountains = Array.from(mountainsByName.values()).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
 
       if (cachedMountains.length === 0) {
         throw new Error("Railway에서 표시 가능한 산 데이터를 찾지 못했습니다.");
@@ -1411,6 +1420,9 @@ export const apiService = {
       const cached = courseCache.get(mountainId);
       if (cached) return cached;
 
+      const mountain = await this.getMountain(mountainId).catch(() => null);
+      const mountainImg = mountain?.img;
+
       const mountainName = getMountainNameFromId(mountainId);
       const rows = await fetchFilteredDataRows<SeoulMountainPathRow>(
         "seoul_mountain_paths",
@@ -1423,7 +1435,7 @@ export const apiService = {
       );
 
       const railwayCourses = rows.map((row) =>
-        normalizeRailwayCourse(row, mountainId),
+        normalizeRailwayCourse(row, mountainId, mountainImg),
       );
 
       if (railwayCourses.length > 0) {
@@ -1828,10 +1840,7 @@ export const apiService = {
   /**
    * 현재 로그인 사용자의 최근 생체 데이터 목록을 가져옵니다. 그래프 표시용입니다.
    */
-  async getRecentHealthData(
-    token: string,
-    limit = 60,
-  ): Promise<HealthData[]> {
+  async getRecentHealthData(token: string, limit = 60): Promise<HealthData[]> {
     const safeLimit = Math.max(1, Math.min(300, Math.round(limit)));
     const query = new URLSearchParams({
       limit: String(safeLimit),
