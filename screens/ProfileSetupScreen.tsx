@@ -148,8 +148,9 @@ export default function ProfileSetupScreen() {
               label="보호자 연락처"
               value={guardianNumber}
               onChangeText={setGuardianNumber}
-              placeholder="예: 010-1234-5678"
+              placeholder="예: 보호자 010-1234-5678"
               keyboardType="phone-pad"
+              helperText="긴급 상황 시 구조 요청과 안전 알림에 사용할 보호자 번호입니다."
             />
 
             {errorMessage && (
@@ -193,6 +194,7 @@ function ProfileInput({
   placeholder,
   keyboardType,
   maxLength,
+  helperText,
 }: {
   label: string;
   value: string;
@@ -200,6 +202,7 @@ function ProfileInput({
   placeholder: string;
   keyboardType?: "default" | "number-pad" | "phone-pad";
   maxLength?: number;
+  helperText?: string;
 }) {
   return (
     <View style={styles.field}>
@@ -213,6 +216,7 @@ function ProfileInput({
         maxLength={maxLength}
         style={styles.input}
       />
+      {helperText ? <Text style={styles.helperText}>{helperText}</Text> : null}
     </View>
   );
 }
@@ -286,6 +290,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     fontSize: 15,
     color: "#111827",
+  },
+  helperText: {
+    marginTop: 6,
+    fontSize: 11,
+    lineHeight: 16,
+    color: "#6b7280",
   },
   segmentRow: {
     flexDirection: "row",

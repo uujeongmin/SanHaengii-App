@@ -1,14 +1,20 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import React, { useCallback, useMemo, useState } from 'react';
+import * as SecureStore from 'expo-secure-store';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -33,15 +39,84 @@ import {
 } from '../data/badges';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+type MenuItemKey = 'notifications' | 'safety' | 'account';
 
 const MENU_ITEMS = [
-  { icon: 'notifications-outline' as const, label: '알림 설정' },
-  { icon: 'shield-outline' as const, label: '안전 설정' },
-  { icon: 'settings-outline' as const, label: '앱 설정' },
+  {
+    key: 'notifications',
+    icon: 'notifications-outline' as const,
+    label: '알림 설정',
+    desc: '산행, 안전, 배지 알림 관리',
+  },
+  {
+    key: 'safety',
+    icon: 'shield-outline' as const,
+    label: '안전 설정',
+    desc: '보호자 연락처와 신고 설정',
+  },
+  {
+    key: 'account',
+    icon: 'person-circle-outline' as const,
+    label: '계정 설정',
+    desc: '닉네임과 보호자 연락처 수정',
+  },
+] satisfies Array<{
+  key: MenuItemKey;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  desc: string;
+}>;
+
+const PROFILE_NOTIFICATION_SETTINGS_KEY =
+  'sanhaengii.profileNotificationSettings';
+
+const DEFAULT_NOTIFICATION_SETTINGS = {
+  hikeReminder: true,
+  safetyAlert: true,
+  badgeAlert: true,
+};
+
+type NotificationSettingKey = keyof typeof DEFAULT_NOTIFICATION_SETTINGS;
+
+const NOTIFICATION_OPTIONS: Array<{
+  key: NotificationSettingKey;
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  desc: string;
+}> = [
+  {
+    key: 'hikeReminder',
+    icon: 'calendar-outline',
+    title: '산행 리마인더',
+    desc: '산행 전 준비 알림을 받을게요.',
+  },
+  {
+    key: 'safetyAlert',
+    icon: 'warning-outline',
+    title: '안전 알림',
+    desc: '이상 징후와 긴급 신고 상태를 알려줘요.',
+  },
+  {
+    key: 'badgeAlert',
+    icon: 'ribbon-outline',
+    title: '배지 알림',
+    desc: '새 배지와 성취 알림을 받을게요.',
+  },
+];
+
+const GENDER_OPTIONS = [
+  { label: '남성', value: 'male' },
+  { label: '여성', value: 'female' },
+  { label: '선택 안 함', value: 'none' },
 ];
 
 function safeNumber(value: number | null | undefined) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function cleanProfileText(value: string) {
+  const text = value.trim();
+  return text.length > 0 ? text : null;
 }
 
 function estimateCalories(record: HikingRecord) {
@@ -52,6 +127,14 @@ function estimateCalories(record: HikingRecord) {
   return Math.round(
     distance * 55 + duration * 4.5 + elevation * 0.35 + Math.max(0, heartRate - 100) * 1.2,
   );
+}
+
+function estimateSteps(record: HikingRecord) {
+  const savedSteps = safeNumber(record.steps);
+  if (savedSteps > 0) return Math.round(savedSteps);
+
+  const distance = safeNumber(record.distanceKm);
+  return Math.round(distance * 1400);
 }
 
 function formatDuration(minutes: number) {
@@ -68,6 +151,7 @@ function formatShortDate(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '날짜 없음';
   return date.toLocaleDateString('ko-KR', {
+    timeZone: 'Asia/Seoul',
     month: 'short',
     day: 'numeric',
   });
@@ -75,13 +159,31 @@ function formatShortDate(value: string | null) {
 
 export default function ProfileScreen() {
   const navigation = useNavigation<Nav>();
-  const { isGuest, signOut, token, user } = useAuth();
+  const { completeProfile, isGuest, signOut, token, user } = useAuth();
   const [records, setRecords] = useState<HikingRecord[]>([]);
   const [badges, setBadges] = useState<Badge[]>([]);
   const [userBadges, setUserBadges] = useState<UserBadge[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [notificationModalVisible, setNotificationModalVisible] =
+    useState(false);
+  const [accountSettingsModalVisible, setAccountSettingsModalVisible] =
+    useState(false);
+  const [notificationSettings, setNotificationSettings] = useState(
+    DEFAULT_NOTIFICATION_SETTINGS,
+  );
+  const [accountNickname, setAccountNickname] = useState(user?.nickname ?? '');
+  const [accountName, setAccountName] = useState(user?.name ?? '');
+  const [accountAge, setAccountAge] = useState(user?.age ?? '');
+  const [accountGender, setAccountGender] = useState(user?.gender ?? '');
+  const [accountGuardianNumber, setAccountGuardianNumber] = useState(
+    user?.guardianNumber ?? '',
+  );
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
+  const [accountErrorMessage, setAccountErrorMessage] = useState<string | null>(
+    null,
+  );
 
   const displayName = getUserDisplayName(user);
   const userInitial = getUserInitial(user);
@@ -89,6 +191,41 @@ export default function ProfileScreen() {
     ? '게스트 모드로 이용 중'
     : user?.email ?? '카카오 계정으로 로그인됨';
   const guardianNumber = user?.guardianNumber ?? '등록된 보호자 번호가 없습니다.';
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function hydrateNotificationSettings() {
+      try {
+        const raw = await SecureStore.getItemAsync(
+          PROFILE_NOTIFICATION_SETTINGS_KEY,
+        );
+        if (!raw || !isMounted) return;
+
+        setNotificationSettings({
+          ...DEFAULT_NOTIFICATION_SETTINGS,
+          ...JSON.parse(raw),
+        });
+      } catch (error) {
+        console.warn('[Profile] Failed to load notification settings:', error);
+      }
+    }
+
+    hydrateNotificationSettings();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setAccountNickname(user?.nickname ?? '');
+    setAccountName(user?.name ?? '');
+    setAccountAge(user?.age ?? '');
+    setAccountGender(user?.gender ?? '');
+    setAccountGuardianNumber(user?.guardianNumber ?? '');
+    setAccountErrorMessage(null);
+  }, [user]);
 
   const loadProfile = useCallback(
     async (asRefresh = false) => {
@@ -199,9 +336,80 @@ export default function ProfileScreen() {
     ]);
   }
 
+  function updateNotificationSetting(
+    key: NotificationSettingKey,
+    value: boolean,
+  ) {
+    setNotificationSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      SecureStore.setItemAsync(
+        PROFILE_NOTIFICATION_SETTINGS_KEY,
+        JSON.stringify(next),
+      ).catch((error) => {
+        console.warn('[Profile] Failed to save notification settings:', error);
+      });
+      return next;
+    });
+  }
+
+  function handleMenuPress(key: MenuItemKey) {
+    if (key === 'notifications') {
+      setNotificationModalVisible(true);
+      return;
+    }
+
+    if (key === 'safety') {
+      navigation.navigate('MainTabs', { screen: '안전설정' });
+      return;
+    }
+
+    setAccountSettingsModalVisible(true);
+  }
+
+  async function handleSaveAccountSettings() {
+    setAccountErrorMessage(null);
+
+    if (
+      !cleanProfileText(accountNickname) ||
+      !cleanProfileText(accountName) ||
+      !cleanProfileText(accountAge)
+    ) {
+      setAccountErrorMessage('닉네임, 이름, 나이를 입력해주세요.');
+      return;
+    }
+
+    if (!accountGender) {
+      setAccountErrorMessage('성별을 선택해주세요.');
+      return;
+    }
+
+    setIsSavingAccount(true);
+    try {
+      await completeProfile({
+        nickname: cleanProfileText(accountNickname),
+        name: cleanProfileText(accountName),
+        age: cleanProfileText(accountAge),
+        gender: cleanProfileText(accountGender),
+        guardianNumber: cleanProfileText(accountGuardianNumber),
+      });
+      setAccountSettingsModalVisible(false);
+      Alert.alert('저장 완료', '계정 정보가 업데이트되었습니다.');
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : '계정 정보를 저장하지 못했습니다.';
+      setAccountErrorMessage(message);
+      Alert.alert('저장 실패', message);
+    } finally {
+      setIsSavingAccount(false);
+    }
+  }
+
   function renderRecord(record: HikingRecord) {
     const calories = safeNumber(record.calories ?? estimateCalories(record));
     const elevation = safeNumber(record.elevationGainM);
+    const steps = estimateSteps(record);
 
     return (
       <View key={record.id} style={styles.recordCard}>
@@ -223,6 +431,10 @@ export default function ProfileScreen() {
             <View style={styles.metaItem}>
               <Ionicons name="location-outline" size={12} color="#9ca3af" />
               <Text style={styles.metaText}>{safeNumber(record.distanceKm).toFixed(1)}km</Text>
+            </View>
+            <View style={styles.metaItem}>
+              <Ionicons name="footsteps-outline" size={12} color="#2563eb" />
+              <Text style={styles.metaText}>{steps.toLocaleString()}걸음</Text>
             </View>
             <View style={styles.metaItem}>
               <Ionicons name="flame-outline" size={12} color="#fb923c" />
@@ -363,10 +575,14 @@ export default function ProfileScreen() {
                   index < MENU_ITEMS.length - 1 && styles.menuRowBorder,
                 ]}
                 activeOpacity={0.7}
+                onPress={() => handleMenuPress(item.key)}
               >
                 <View style={styles.menuLeft}>
                   <Ionicons name={item.icon} size={20} color="#6b7280" />
-                  <Text style={styles.menuLabel}>{item.label}</Text>
+                  <View style={styles.menuTextBlock}>
+                    <Text style={styles.menuLabel}>{item.label}</Text>
+                    <Text style={styles.menuDesc}>{item.desc}</Text>
+                  </View>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#9ca3af" />
               </TouchableOpacity>
@@ -381,7 +597,239 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={notificationModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNotificationModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.settingsModal}>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalTitle}>알림 설정</Text>
+                <Text style={styles.modalDesc}>
+                  앱에서 받을 알림 항목을 선택하세요.
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => setNotificationModalVisible(false)}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="close" size={20} color="#111827" />
+              </TouchableOpacity>
+            </View>
+
+            {NOTIFICATION_OPTIONS.map((option) => (
+              <View key={option.key} style={styles.settingRow}>
+                <View style={styles.settingLeft}>
+                  <View style={styles.settingIcon}>
+                    <Ionicons name={option.icon} size={18} color="#16a34a" />
+                  </View>
+                  <View style={styles.settingTextBlock}>
+                    <Text style={styles.settingTitle}>{option.title}</Text>
+                    <Text style={styles.settingDesc}>{option.desc}</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={notificationSettings[option.key]}
+                  onValueChange={(value) =>
+                    updateNotificationSetting(option.key, value)
+                  }
+                  trackColor={{ false: '#e5e7eb', true: '#bbf7d0' }}
+                  thumbColor={
+                    notificationSettings[option.key] ? '#16a34a' : '#f9fafb'
+                  }
+                />
+              </View>
+            ))}
+
+            <TouchableOpacity
+              style={styles.modalPrimaryButton}
+              onPress={() => setNotificationModalVisible(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.modalPrimaryButtonText}>완료</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={accountSettingsModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAccountSettingsModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.accountKeyboardView}
+          >
+          <View style={[styles.settingsModal, styles.accountModal]}>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalTitle}>계정 설정</Text>
+                <Text style={styles.modalDesc}>
+                  산행 기록과 안전 기능에 사용할 정보를 수정합니다.
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => setAccountSettingsModalVisible(false)}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="close" size={20} color="#111827" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.accountForm}
+            >
+              <View style={styles.accountStatusCard}>
+                <Ionicons
+                  name={isGuest ? 'person-outline' : 'person-circle-outline'}
+                  size={18}
+                  color="#166534"
+                />
+                <Text style={styles.accountStatusText}>
+                  {isGuest ? '게스트 모드로 이용 중' : '카카오 계정으로 로그인 중'}
+                </Text>
+              </View>
+
+              <AccountInput
+                label="닉네임"
+                value={accountNickname}
+                onChangeText={setAccountNickname}
+                placeholder="앱에서 사용할 이름"
+              />
+              <AccountInput
+                label="이름"
+                value={accountName}
+                onChangeText={setAccountName}
+                placeholder="실명 또는 표시 이름"
+              />
+              <AccountInput
+                label="나이"
+                value={accountAge}
+                onChangeText={setAccountAge}
+                placeholder="예: 29"
+                keyboardType="number-pad"
+                maxLength={3}
+              />
+
+              <View style={styles.accountField}>
+                <Text style={styles.accountLabel}>성별</Text>
+                <View style={styles.genderRow}>
+                  {GENDER_OPTIONS.map((option) => {
+                    const selected = accountGender === option.value;
+                    return (
+                      <TouchableOpacity
+                        key={option.value}
+                        style={[
+                          styles.genderButton,
+                          selected && styles.genderButtonSelected,
+                        ]}
+                        onPress={() => setAccountGender(option.value)}
+                        activeOpacity={0.78}
+                      >
+                        <Text
+                          style={[
+                            styles.genderText,
+                            selected && styles.genderTextSelected,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <AccountInput
+                label="보호자 연락처"
+                value={accountGuardianNumber}
+                onChangeText={setAccountGuardianNumber}
+                placeholder="예: 보호자 010-1234-5678"
+                keyboardType="phone-pad"
+                helperText="긴급 상황 시 구조 요청과 안전 알림에 사용할 번호입니다."
+              />
+
+              {accountErrorMessage ? (
+                <Text style={styles.accountErrorText}>
+                  {accountErrorMessage}
+                </Text>
+              ) : null}
+
+              <TouchableOpacity
+                style={[
+                  styles.modalPrimaryButton,
+                  isSavingAccount && styles.modalPrimaryButtonDisabled,
+                ]}
+                onPress={handleSaveAccountSettings}
+                disabled={isSavingAccount}
+                activeOpacity={0.82}
+              >
+                {isSavingAccount ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text style={styles.modalPrimaryButtonText}>계정 정보 저장</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.settingActionButton, styles.settingDangerButton]}
+                onPress={handleSignOut}
+                activeOpacity={0.78}
+              >
+                <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+                <Text style={styles.settingDangerText}>로그아웃</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+function AccountInput({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  keyboardType,
+  maxLength,
+  helperText,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder: string;
+  keyboardType?: 'default' | 'number-pad' | 'phone-pad';
+  maxLength?: number;
+  helperText?: string;
+}) {
+  return (
+    <View style={styles.accountField}>
+      <Text style={styles.accountLabel}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#9ca3af"
+        keyboardType={keyboardType}
+        maxLength={maxLength}
+        style={styles.accountInput}
+      />
+      {helperText ? <Text style={styles.accountHelperText}>{helperText}</Text> : null}
+    </View>
   );
 }
 
@@ -565,8 +1013,10 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   menuRowBorder: { borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
-  menuLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  menuLabel: { fontSize: 14, color: '#1f2937' },
+  menuLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  menuTextBlock: { flex: 1, minWidth: 0 },
+  menuLabel: { fontSize: 14, color: '#1f2937', fontWeight: '700' },
+  menuDesc: { fontSize: 11, color: '#9ca3af', marginTop: 2 },
   logoutBtn: {
     backgroundColor: '#fef2f2',
     borderRadius: 18,
@@ -577,4 +1027,182 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   logoutText: { fontSize: 14, fontWeight: '600', color: '#ef4444' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.42)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  settingsModal: {
+    backgroundColor: '#ffffff',
+    borderRadius: 24,
+    padding: 20,
+    gap: 14,
+  },
+  accountKeyboardView: { width: '100%' },
+  accountModal: {
+    maxHeight: '88%',
+  },
+  accountForm: {
+    gap: 14,
+    paddingBottom: 2,
+  },
+  accountStatusCard: {
+    backgroundColor: '#f0fdf4',
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  accountStatusText: {
+    flex: 1,
+    color: '#166534',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  accountField: {
+    gap: 8,
+  },
+  accountLabel: {
+    fontSize: 12,
+    color: '#374151',
+    fontWeight: '800',
+  },
+  accountInput: {
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#f9fafb',
+    paddingHorizontal: 14,
+    fontSize: 14,
+    color: '#111827',
+  },
+  accountHelperText: {
+    fontSize: 11,
+    color: '#6b7280',
+    lineHeight: 16,
+  },
+  genderRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  genderButton: {
+    flex: 1,
+    height: 42,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#f9fafb',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  genderButtonSelected: {
+    backgroundColor: '#dcfce7',
+    borderColor: '#86efac',
+  },
+  genderText: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '800',
+  },
+  genderTextSelected: {
+    color: '#166534',
+  },
+  accountErrorText: {
+    color: '#dc2626',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalTitle: { fontSize: 20, color: '#111827', fontWeight: '900' },
+  modalDesc: { fontSize: 12, color: '#6b7280', marginTop: 4 },
+  modalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f3f4f6',
+  },
+  settingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  settingLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  settingIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#f0fdf4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingTextBlock: { flex: 1, minWidth: 0 },
+  settingTitle: { fontSize: 14, color: '#111827', fontWeight: '800' },
+  settingDesc: { fontSize: 11, color: '#6b7280', lineHeight: 16, marginTop: 2 },
+  modalPrimaryButton: {
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: '#16a34a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  modalPrimaryButtonDisabled: {
+    opacity: 0.72,
+  },
+  modalPrimaryButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  appInfoCard: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 16,
+    padding: 14,
+    gap: 10,
+  },
+  appInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  appInfoLabel: { fontSize: 12, color: '#6b7280', fontWeight: '700' },
+  appInfoValue: { fontSize: 12, color: '#111827', fontWeight: '900' },
+  settingActionButton: {
+    height: 48,
+    borderRadius: 15,
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  settingActionText: { fontSize: 13, color: '#166534', fontWeight: '900' },
+  settingDangerButton: {
+    backgroundColor: '#fef2f2',
+    borderColor: '#fecaca',
+  },
+  settingDangerText: { fontSize: 13, color: '#ef4444', fontWeight: '900' },
 });
