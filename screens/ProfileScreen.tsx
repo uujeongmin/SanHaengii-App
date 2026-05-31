@@ -35,6 +35,7 @@ import {
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 const MENU_ITEMS = [
+  { icon: 'cloud-download-outline' as const, label: '저장된 지도', screen: 'SavedMaps' },
   { icon: 'notifications-outline' as const, label: '알림 설정' },
   { icon: 'shield-outline' as const, label: '안전 설정' },
   { icon: 'settings-outline' as const, label: '앱 설정' },
@@ -363,6 +364,11 @@ export default function ProfileScreen() {
                   index < MENU_ITEMS.length - 1 && styles.menuRowBorder,
                 ]}
                 activeOpacity={0.7}
+                onPress={() => {
+                  if ('screen' in item && item.screen) {
+                    navigation.navigate(item.screen as any);
+                  }
+                }}
               >
                 <View style={styles.menuLeft}>
                   <Ionicons name={item.icon} size={20} color="#6b7280" />

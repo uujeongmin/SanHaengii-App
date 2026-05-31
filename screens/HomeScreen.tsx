@@ -26,8 +26,7 @@ import {
   getUserInitial,
   useAuth,
 } from "../contexts/AuthContext";
-import { apiService } from "../data/api";
-import { type Mountain, type MountainCourse } from "../data/mountains";
+import { apiService, type Mountain, type MountainCourse } from "../data/api";
 
 type HomeNavProp = CompositeNavigationProp<
   BottomTabNavigationProp<RootTabParamList, "홈">,
@@ -119,6 +118,7 @@ export default function HomeScreen() {
       distance: course.distance,
       time: course.time,
       elevation: course.elevation,
+      img: course.img,
     };
     navigation.navigate("내비게이션", params);
   }
@@ -384,7 +384,7 @@ export default function HomeScreen() {
                           </Text>
                         </View>
                         <View style={styles.tagsRow}>
-                          {safeTags.slice(0, 2).map((tag) => (
+                          {safeTags.slice(0, 2).map((tag: string) => (
                             <View key={tag} style={styles.tagBadge}>
                               <Text style={styles.tagText}>{tag}</Text>
                             </View>
