@@ -33,6 +33,9 @@ const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const LEGACY_TRAIL_API_BASE_URL =
   process.env.EXPO_PUBLIC_TRAIL_API_BASE_URL ?? LOCAL_TRAIL_API_BASE_URL;
 
+// Flask relay 주소 (워치·모바일 credentials 동기화용)
+export const FLASK_RELAY_BASE_URL = LOCAL_TRAIL_API_BASE_URL;
+
 export const TRAIL_API_BASE_URL = DATA_API_BASE_URL;
 export const BASE_URL = DATA_API_BASE_URL;
 
@@ -235,6 +238,39 @@ export interface HealthData {
   bodyTemp: number | null;
   bloodPressureSystolic: number | null;
   bloodPressureDiastolic: number | null;
+}
+
+export interface HealthAnomaly {
+  type: string;
+  message: string;
+}
+
+/**
+ * 생체 데이터(HealthData)에서 이상 징후를 로컬 판정합니다.
+ * 임계값: 심박수 >160/<40, 산소포화도 <90%, 체온 >39°C/<35°C
+ * (SafetyScreen.detectAnomalyLocally와 동일 기준, camelCase 대응)
+ */
+export function detectHealthAnomaly(
+  data: Pick<HealthData, "heartRate" | "spo2" | "bodyTemp"> | null | undefined,
+): HealthAnomaly | null {
+  if (!data) return null;
+
+  const hr = data.heartRate;
+  const spo2 = data.spo2;
+  const temp = data.bodyTemp;
+
+  if (hr != null && hr > 160)
+    return { type: "빈맥", message: "심박수가 너무 높습니다 (빈맥 감지)" };
+  if (hr != null && hr < 40 && hr > 0)
+    return { type: "서맥", message: "심박수가 너무 낮습니다 (서맥 감지)" };
+  if (spo2 != null && spo2 < 90 && spo2 > 0)
+    return { type: "저산소증", message: "산소포화도가 낮습니다 (저산소증 위험)" };
+  if (temp != null && temp > 39)
+    return { type: "고열", message: "체온이 너무 높습니다 (고열 감지)" };
+  if (temp != null && temp < 35 && temp > 0)
+    return { type: "저체온", message: "체온이 너무 낮습니다 (저체온증 위험)" };
+
+  return null;
 }
 
 export interface Badge {
@@ -1054,6 +1090,146 @@ export const apiService = {
     } catch (error) {
       console.error("[API] Error in finishHikingRecord:", error);
       throw error;
+    }
+  },
+
+  /**
+   * 내비게이션 중 active hiking_records row의 '잔여 ETA/거리'를 갱신합니다.
+   * duration_minutes=잔여분, distance_km=잔여km로 써두면, 워치가
+   * /data/hiking_records/filter({user_id})로 읽어 워치 대시보드에 표시합니다.
+   * 백그라운드 중계용이므로 실패해도 throw하지 않습니다(내비 흐름 보호).
+   */
+  async updateHikingProgress(
+    recordId: number,
+    remainingMinutes: number,
+    remainingKm: number,
+    token?: string | null,
+  ): Promise<boolean> {
+    const endpoint = `${AUTH_API_BASE_URL}/data/hiking_records/${recordId}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          duration_minutes: Math.max(0, Math.round(remainingMinutes)),
+          distance_km: Math.max(0, Number(remainingKm.toFixed(2))),
+        }),
+      });
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to update hiking progress (Status: ${response.status})`,
+        );
+        console.warn("[API] updateHikingProgress 실패:", message);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.warn("[API] updateHikingProgress 네트워크 오류:", error);
+      return false;
+    }
+  },
+
+  /**
+   * 로그인 후 user_id + JWT를 Flask relay에 업데이트합니다(워치 동기화용).
+   * 워치가 fetchWatchCredentials()로 폴링해 자동 반영되므로 호출측은 await 안 함.
+   */
+  async updateWatchCredentials(userId: number, token: string): Promise<void> {
+    let baseUrl = FLASK_RELAY_BASE_URL.trim();
+    if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+    if (!baseUrl) return; // Flask relay 미구성 시 무시
+
+    try {
+      await fetch(`${baseUrl}/api/watch-credentials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, token }),
+      });
+      // 성공/실패 모두 무시 (백그라운드 동기화)
+    } catch (error) {
+      console.warn("[API] updateWatchCredentials 오류:", error);
+    }
+  },
+
+  /**
+   * 산행 상태(공유 신호)를 갱신합니다. active/paused/completed/cancelled.
+   * 워치·모바일이 동일 레코드의 status를 폴링해 시작/일시정지/종료를 동기화합니다.
+   * 백그라운드 동기화용이라 실패해도 throw하지 않습니다.
+   */
+  async updateHikingStatus(
+    recordId: number,
+    status: "active" | "paused" | "completed" | "cancelled" | "anomaly",
+    token?: string | null,
+  ): Promise<boolean> {
+    const endpoint = `${AUTH_API_BASE_URL}/data/hiking_records/${recordId}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const body: Record<string, unknown> = { status };
+    if (status === "completed" || status === "cancelled") {
+      body.ended_at = toKoreanISOString();
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const message = await getErrorMessage(
+          response,
+          `Failed to update hiking status (Status: ${response.status})`,
+        );
+        console.warn("[API] updateHikingStatus 실패:", message);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.warn("[API] updateHikingStatus 네트워크 오류:", error);
+      return false;
+    }
+  },
+
+  /**
+   * 특정 hiking_records row의 현재 status를 조회합니다(외부 변경 감지용).
+   * 조회 실패 시 null 반환(동기화 폴러가 안전하게 무시).
+   */
+  async getHikingRecordStatus(
+    recordId: number,
+    token?: string | null,
+  ): Promise<string | null> {
+    const endpoint = `${AUTH_API_BASE_URL}/data/hiking_records/${recordId}`;
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    try {
+      const response = await fetch(endpoint, { method: "GET", headers });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const row = Array.isArray(data)
+        ? data[0]
+        : (data.record ?? data.row ?? data.data ?? data);
+      const status = row?.status;
+      return typeof status === "string" ? status : null;
+    } catch (error) {
+      console.warn("[API] getHikingRecordStatus 오류:", error);
+      return null;
     }
   },
 
