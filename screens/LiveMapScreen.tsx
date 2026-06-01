@@ -289,28 +289,36 @@ export default function LiveMapScreen() {
 
   /* ── 지도 컨트롤 상태 ── */
   const mapRef = useRef<NaverMapViewRef>(null);
+  // 사용자가 드래그한 지도 카메라 위치 기억 (줌/현위치 버튼 기준)
+  const mapCamera = useRef<MapCoord | null>(null);
 
   const [zoom, setZoom] = useState(15);
 
   const handleZoomIn = () => {
     setZoom((z) => {
       const newZoom = Math.min(z + 1, 21);
-      mapRef.current?.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: newZoom,
-      });
+      const target = mapCamera.current || currentLocation;
+      if (target) {
+        mapRef.current?.animateCameraTo({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          zoom: newZoom,
+        });
+      }
       return newZoom;
     });
   };
   const handleZoomOut = () => {
     setZoom((z) => {
       const newZoom = Math.max(z - 1, 5);
-      mapRef.current?.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: newZoom,
-      });
+      const target = mapCamera.current || currentLocation;
+      if (target) {
+        mapRef.current?.animateCameraTo({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          zoom: newZoom,
+        });
+      }
       return newZoom;
     });
   };
@@ -1081,7 +1089,13 @@ export default function LiveMapScreen() {
       <NaverMapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        camera={mapRegion ? undefined : { ...currentLocation, zoom }}
+        camera={
+          mapRegion
+            ? undefined
+            : mapCamera.current
+              ? { ...mapCamera.current, zoom }
+              : { ...currentLocation, zoom }
+        }
         region={mapRegion}
         animationDuration={500}
         mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
@@ -1096,6 +1110,15 @@ export default function LiveMapScreen() {
         isShowScaleBar={true}
         isShowZoomControls={false}
         isShowLocationButton={false}
+        onCameraChanged={(e: any) => {
+          mapCamera.current = {
+            latitude: e.latitude,
+            longitude: e.longitude,
+          };
+          if (e.reason !== 0) {
+            setZoom(e.zoom);
+          }
+        }}
       >
         {/* 통합 경로 네트워크 표시 */}
         {unifiedPathPartChunks.map((pathParts, index) => (
