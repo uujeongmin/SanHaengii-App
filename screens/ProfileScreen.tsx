@@ -39,7 +39,7 @@ import {
 } from '../data/badges';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
-type MenuItemKey = 'notifications' | 'safety' | 'account';
+type MenuItemKey = 'notifications' | 'safety' | 'account' | 'savedMaps';
 
 const MENU_ITEMS = [
   {
@@ -59,6 +59,12 @@ const MENU_ITEMS = [
     icon: 'person-circle-outline' as const,
     label: '계정 설정',
     desc: '닉네임과 보호자 연락처 수정',
+  },
+  {
+    key: 'savedMaps',
+    icon: 'cloud-download-outline' as const,
+    label: '저장된 지도',
+    desc: '오프라인으로 저장한 코스 지도',
   },
 ] satisfies Array<{
   key: MenuItemKey;
@@ -360,6 +366,11 @@ export default function ProfileScreen() {
 
     if (key === 'safety') {
       navigation.navigate('MainTabs', { screen: '안전설정' });
+      return;
+    }
+
+    if (key === 'savedMaps') {
+      navigation.navigate('SavedMaps');
       return;
     }
 
