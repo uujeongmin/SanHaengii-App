@@ -1,4 +1,4 @@
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import {
   NaverMapMarkerOverlay,
   NaverMapMultiPathOverlay,
@@ -51,6 +51,71 @@ type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, "내비게이션
 type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
 const UNIFIED_PATH_CHUNK_SIZE = 1200;
 const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
+
+const markerBubbleStyle = {
+  width: 36,
+  height: 36,
+  borderRadius: 18,
+  alignItems: "center" as const,
+  justifyContent: "center" as const,
+  borderWidth: 2,
+  borderColor: "#ffffff",
+};
+
+const MARKER_ICON_SETS = {
+  ionicons: Ionicons,
+  material: MaterialCommunityIcons,
+} as const;
+
+/* ── 지도 마커 아이콘 (원형 버블) ── */
+function MapMarkerIcon({
+  name,
+  color,
+  set = "ionicons",
+}: {
+  name: string;
+  color: string;
+  set?: keyof typeof MARKER_ICON_SETS;
+}) {
+  const IconSet = MARKER_ICON_SETS[set];
+  return (
+    <View
+      key={`${set}/${name}/${color}`}
+      collapsable={false}
+      style={[markerBubbleStyle, { backgroundColor: color }]}
+    >
+      <IconSet name={name as any} size={18} color="#ffffff" />
+    </View>
+  );
+}
+
+/* ── 포토스팟 정보창 (마커 위 말풍선) ── */
+function PhotoSpotInfoWindow({ spot }: { spot: PhotoSpot }) {
+  return (
+    <View
+      key={`info/${spot.spot}/${spot.address}`}
+      collapsable={false}
+      style={styles.infoWindowWrapper}
+    >
+      <View style={styles.infoWindowCard}>
+        <View style={styles.infoWindowHeader}>
+          <Ionicons name="camera" size={14} color="#8b5cf6" />
+          <Text style={styles.infoWindowTitle} numberOfLines={1}>
+            {spot.spot ?? "포토스팟"}
+          </Text>
+          <Ionicons name="close" size={14} color="#9ca3af" />
+        </View>
+        <Text style={styles.infoWindowAddress} numberOfLines={2}>
+          {spot.address ?? "주소 정보가 없습니다."}
+        </Text>
+      </View>
+      {/* 아래를 가리키는 말풍선 꼬리 */}
+      <View style={styles.infoWindowArrow} />
+      {/* 마커 아이콘 높이만큼 띄우는 투명 공간 */}
+      <View style={styles.infoWindowSpacer} />
+    </View>
+  );
+}
 
 /**
  * 문자열을 분 단위 숫자로 변환합니다.
@@ -193,6 +258,9 @@ export default function LiveMapScreen() {
 
   // SNS 인기 조망점(포토스팟) 상태
   const [photoSpots, setPhotoSpots] = useState<PhotoSpot[]>([]);
+  const [selectedPhotoSpot, setSelectedPhotoSpot] = useState<PhotoSpot | null>(
+    null,
+  );
 
   // 오프라인 지도 저장 상태
   const [isOfflineDownloading, setIsOfflineDownloading] = useState(false);
@@ -1058,33 +1126,40 @@ export default function LiveMapScreen() {
         <NaverMapMarkerOverlay
           latitude={currentLocation.latitude}
           longitude={currentLocation.longitude}
-          width={24}
-          height={24}
-          image={require("../assets/images/favicon.png")} // 임시 아이콘
+          width={36}
+          height={36}
           caption={{ text: "현위치" }}
           subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
-        />
+        >
+          <MapMarkerIcon name="navigate" color="#2563eb" />
+        </NaverMapMarkerOverlay>
 
         {/* 출발/도착 마커 */}
         {startPoint && (
           <NaverMapMarkerOverlay
             latitude={startPoint.latitude}
             longitude={startPoint.longitude}
-            width={30}
-            height={30}
-            image={{ symbol: "green" }}
+            width={36}
+            height={36}
             caption={{ text: "출발" }}
-          />
+          >
+            <MapMarkerIcon name="flag" color="#16a34a" />
+          </NaverMapMarkerOverlay>
         )}
         {endPoint && (
           <NaverMapMarkerOverlay
             latitude={endPoint.latitude}
             longitude={endPoint.longitude}
-            width={30}
-            height={30}
-            image={{ symbol: "red" }}
+            width={36}
+            height={36}
             caption={{ text: "도착" }}
-          />
+          >
+            <MapMarkerIcon
+              name="flag-checkered"
+              color="#dc2626"
+              set="material"
+            />
+          </NaverMapMarkerOverlay>
         )}
 
         {/* SNS 포토스팟 마커 (토글로 제어) */}
@@ -1095,13 +1170,30 @@ export default function LiveMapScreen() {
               key={`sns-spot-${spot.spot}-${index}`}
               latitude={spot.latitude}
               longitude={spot.longitude}
-              width={28}
-              height={28}
-              image={require("../assets/images/photo_spot_marker.png")}
+              width={36}
+              height={36}
               caption={{ text: spot.spot ?? "포토스팟" }}
               zIndex={12}
-            />
+              onTap={() => setSelectedPhotoSpot(spot)}
+            >
+              <MapMarkerIcon name="camera" color="#8b5cf6" />
+            </NaverMapMarkerOverlay>
           ))}
+
+        {/* 포토스팟 정보창 (탭한 마커 바로 위에 표시) */}
+        {selectedPhotoSpot && (
+          <NaverMapMarkerOverlay
+            latitude={selectedPhotoSpot.latitude}
+            longitude={selectedPhotoSpot.longitude}
+            width={220}
+            height={132}
+            anchor={{ x: 0.5, y: 1 }}
+            zIndex={40}
+            onTap={() => setSelectedPhotoSpot(null)}
+          >
+            <PhotoSpotInfoWindow spot={selectedPhotoSpot} />
+          </NaverMapMarkerOverlay>
+        )}
       </NaverMapView>
 
       <View style={styles.overlay} pointerEvents="none" />
@@ -1274,7 +1366,10 @@ export default function LiveMapScreen() {
                   </View>
                   <ToggleSwitch
                     enabled={snsSpot}
-                    onChange={setSnsSpot}
+                    onChange={(v) => {
+                      setSnsSpot(v);
+                      if (!v) setSelectedPhotoSpot(null);
+                    }}
                     activeColor="#9333ea"
                   />
                 </View>
@@ -1497,6 +1592,55 @@ const styles = StyleSheet.create({
   offlineBtn: {
     padding: 4,
     marginLeft: 4,
+  },
+  infoWindowWrapper: {
+    width: 220,
+    height: 132,
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  infoWindowCard: {
+    width: "100%",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  infoWindowHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  infoWindowTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  infoWindowAddress: {
+    fontSize: 12,
+    color: "#6b7280",
+    lineHeight: 17,
+  },
+  infoWindowArrow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 9,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderTopColor: "#ffffff",
+    marginTop: -1,
+  },
+  infoWindowSpacer: {
+    height: 42,
   },
   sosButton: {
     width: 48,
