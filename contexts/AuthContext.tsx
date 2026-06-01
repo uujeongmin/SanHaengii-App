@@ -122,6 +122,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (isMounted) {
           setToken(storedToken);
           setUser(currentUser);
+          // 재시작 시에도 워치와 credentials 동기화 (백그라운드)
+          if (currentUser.id > 0) {
+            apiService.updateWatchCredentials(currentUser.id, storedToken);
+          }
         }
       } catch (error) {
         console.warn("[Auth] Stored session is invalid:", error);
@@ -165,6 +169,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await SecureStore.setItemAsync(AUTH_TOKEN_KEY, loginResponse.token);
       setToken(loginResponse.token);
       setUser(loginResponse.user);
+
+      // 개발 편의: 워치 user_id 동기화에 필요한 정보를 Metro 콘솔에 출력
+      // npm run sync-watch -- <token> 으로 워치 local.properties 자동 업데이트 가능
+      if (__DEV__) {
+        console.log(
+          `[Auth] ✅ 로그인 완료 — users.id=${loginResponse.user.id}\n` +
+          `[Auth] 워치 동기화: npm run sync-watch -- ${loginResponse.token}`,
+        );
+      }
+
+      // 워치와 credentials 동기화 (백그라운드, 실패 무시)
+      if (loginResponse.user.id > 0) {
+        apiService.updateWatchCredentials(
+          loginResponse.user.id,
+          loginResponse.token,
+        );
+      }
     } finally {
       setIsSigningIn(false);
     }
