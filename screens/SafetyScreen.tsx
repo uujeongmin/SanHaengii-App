@@ -540,52 +540,6 @@ export default function SafetyScreen() {
           )}
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>자동 신고 프로토콜</Text>
-
-            <View style={styles.protocolItem}>
-              <View
-                style={[styles.protocolIcon, { backgroundColor: "#fff7ed" }]}
-              >
-                <Ionicons
-                  name="phone-portrait-outline"
-                  size={20}
-                  color="#ea580c"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <View style={styles.protocolTitleRow}>
-                  <Text style={styles.protocolName}>낙상 감지</Text>
-                  <Text style={styles.protocolOn}>ON</Text>
-                </View>
-                <Text style={styles.protocolDesc}>
-                  비정상적인 가속도 변화가 감지된 후 30초 내 사용자 응답이
-                  없으면 자동 신고됩니다.
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.divider} />
-
-            <View style={styles.protocolItem}>
-              <View
-                style={[styles.protocolIcon, { backgroundColor: "#eff6ff" }]}
-              >
-                <Ionicons name="person-outline" size={20} color="#2563eb" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <View style={styles.protocolTitleRow}>
-                  <Text style={styles.protocolName}>장기 미이동</Text>
-                  <Text style={styles.protocolOn}>ON</Text>
-                </View>
-                <Text style={styles.protocolDesc}>
-                  산행 중 20분 이상 이동이 감지되지 않으면 안부 확인 알림을
-                  전송합니다.
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
               <Text style={styles.cardTitle}>비상 연락망</Text>
             </View>

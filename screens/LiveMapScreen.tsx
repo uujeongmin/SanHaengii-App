@@ -51,6 +51,7 @@ type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, "내비게이션
 type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
 const UNIFIED_PATH_CHUNK_SIZE = 1200;
 const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
+const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
 
 const markerBubbleStyle = {
   width: 36,
@@ -221,7 +222,16 @@ export default function LiveMapScreen() {
   const navigation = useNavigation<LiveMapNavProp>();
   const route = useRoute<LiveMapRouteProp>();
   const { isGuest, token, user } = useAuth();
-  const { latestData: latestWatchData } = useWatchHealth();
+  const {
+    latestData: latestWatchData,
+    status: watchStatus,
+    anomalyAlert,
+    dismissAnomaly,
+    markWatchNotified,
+  } = useWatchHealth();
+  // 워치 심박수가 실제로 수신되는지(라이브) 여부
+  const isWatchHrLive =
+    watchStatus === "live" && (latestWatchData?.heartRate ?? 0) > 0;
 
   /* 코스 파라미터 (홈에서 전달, 없으면 기본값) */
   const params = route.params as CourseParams | undefined;
@@ -278,6 +288,11 @@ export default function LiveMapScreen() {
   const [heartRate, setHeartRate] = useState(0); // bpm
   const [unifiedLoading, setUnifiedLoading] = useState(false);
 
+  // 워치 걸음수로 페이스 추정 (이전 측정값 보관)
+  const prevStepsRef = useRef<{ steps: number; time: number } | null>(null);
+  // 워치 기반 페이스를 한 번이라도 산출했는지 (이후 시뮬레이션 페이스 중단)
+  const hasWatchPaceRef = useRef(false);
+
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
   const [snsSpot, setSnsSpot] = useState(true);
@@ -289,28 +304,36 @@ export default function LiveMapScreen() {
 
   /* ── 지도 컨트롤 상태 ── */
   const mapRef = useRef<NaverMapViewRef>(null);
+  // 사용자가 드래그한 지도 카메라 위치 기억 (줌/현위치 버튼 기준)
+  const mapCamera = useRef<MapCoord | null>(null);
 
   const [zoom, setZoom] = useState(15);
 
   const handleZoomIn = () => {
     setZoom((z) => {
       const newZoom = Math.min(z + 1, 21);
-      mapRef.current?.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: newZoom,
-      });
+      const target = mapCamera.current || currentLocation;
+      if (target) {
+        mapRef.current?.animateCameraTo({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          zoom: newZoom,
+        });
+      }
       return newZoom;
     });
   };
   const handleZoomOut = () => {
     setZoom((z) => {
       const newZoom = Math.max(z - 1, 5);
-      mapRef.current?.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: newZoom,
-      });
+      const target = mapCamera.current || currentLocation;
+      if (target) {
+        mapRef.current?.animateCameraTo({
+          latitude: target.latitude,
+          longitude: target.longitude,
+          zoom: newZoom,
+        });
+      }
       return newZoom;
     });
   };
@@ -387,9 +410,9 @@ export default function LiveMapScreen() {
         // 잠시 대기하여 타일이 로드되도록 함
         await new Promise((resolve) => setTimeout(resolve, 1500));
 
-        // 3. 로컬 저장소에 저장 정보 기록
-        const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
-        const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+        // 3. 로컬 저장소에 저장 정보 기록 (사용자별 키)
+        const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
+        const savedStr = await SecureStore.getItemAsync(savedKey);
         let savedList = savedStr ? JSON.parse(savedStr) : [];
 
         // 중복 확인
@@ -405,10 +428,7 @@ export default function LiveMapScreen() {
             img: (params as any)?.img ?? null, // 전달받은 이미지 URL 저장
             path: routePath, // 오프라인 상세 화면에서 그리기 위해 경로 데이터 추가
           });
-          await SecureStore.setItemAsync(
-            SAVED_MAPS_KEY,
-            JSON.stringify(savedList),
-          );
+          await SecureStore.setItemAsync(savedKey, JSON.stringify(savedList));
         }
 
         // 4. 저장 완료 처리
@@ -420,7 +440,10 @@ export default function LiveMapScreen() {
       }
     } catch (e) {
       console.error("[Offline] Download failed:", e);
-      Alert.alert("저장 실패", "지도 데이터를 저장하는 중 오류가 발생했습니다.");
+      Alert.alert(
+        "저장 실패",
+        "지도 데이터를 저장하는 중 오류가 발생했습니다.",
+      );
     } finally {
       setIsOfflineDownloading(false);
     }
@@ -487,38 +510,47 @@ export default function LiveMapScreen() {
 
   const handlePauseResume = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setIsPaused((prev) => !prev);
+    const next = !isPaused;
+    setIsPaused(next);
+    // 일시정지/재개 상태를 워치와 동기화 (status: paused/active)
+    const recordId = activeHikingRecordIdRef.current;
+    if (recordId) {
+      apiService.updateHikingStatus(
+        recordId,
+        next ? "paused" : "active",
+        token,
+      );
+    }
+  };
+
+  // 내비게이션 로컬 상태 초기화 (외부 종료 감지/중단 공통)
+  const resetNavigationState = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    activeHikingRecordIdRef.current = null;
+    activeHikingRecordKeyRef.current = null;
+    setActiveHikingRecordId(null);
+    setRoutePath([]);
+    setStartPoint(null);
+    setEndPoint(null);
+    setRemainingDist(0);
+    setDynamicEta(0);
+    setUnifiedPathPartChunks([]);
+    setIsPaused(false);
   };
 
   const handleStopNavigation = () => {
-    Alert.alert("내비게이션 중단", "현재 진행 중인 내비게이션을 종료할까요?", [
+    Alert.alert("산행 중단", "현재 산행을 완전히 종료할까요? (기록 저장)", [
       { text: "취소", style: "cancel" },
       {
         text: "종료",
         style: "destructive",
         onPress: async () => {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           const recordId = activeHikingRecordIdRef.current;
           if (recordId) {
-            try {
-              await apiService.cancelHikingRecord(recordId, token);
-            } catch (error) {
-              console.warn("[LiveMap] Failed to cancel active record:", error);
-            } finally {
-              activeHikingRecordIdRef.current = null;
-              activeHikingRecordKeyRef.current = null;
-              setActiveHikingRecordId(null);
-            }
+            // 중단 = 완전 종료(기록 저장). status: completed → 워치도 종료됨
+            await apiService.updateHikingStatus(recordId, "completed", token);
           }
-          // 상태 초기화
-          setRoutePath([]);
-          setStartPoint(null);
-          setEndPoint(null);
-          setRemainingDist(0);
-          setDynamicEta(0);
-          setUnifiedPathPartChunks([]);
-          // 필요한 경우 navigation.goBack() 또는 다른 처리가 가능하지만,
-          // 요청에 따라 로컬 상태만 초기화하여 맵에 남게 함.
+          resetNavigationState();
         },
       },
     ]);
@@ -575,6 +607,106 @@ export default function LiveMapScreen() {
     activeHikingRecordIdRef.current = activeHikingRecordId;
   }, [activeHikingRecordId]);
 
+  // 워치 중계용: 최신 잔여 ETA/거리를 ref로 보관 (인터벌 재생성 방지)
+  const dynamicEtaRef = useRef(dynamicEta);
+  const remainingDistRef = useRef(remainingDist);
+  useEffect(() => {
+    dynamicEtaRef.current = dynamicEta;
+  }, [dynamicEta]);
+  useEffect(() => {
+    remainingDistRef.current = remainingDist;
+  }, [remainingDist]);
+
+  /* ── 내비게이션 중 잔여 ETA/거리를 워치로 중계 (10초 주기) ──
+   * active hiking_record(사용자 계정 기준)의 duration_minutes/distance_km를
+   * 갱신 → 워치 fetchRelayStatus가 user_id로 읽어 동일하게 표시. */
+  useEffect(() => {
+    if (activeHikingRecordId == null) return;
+
+    const relay = () => {
+      apiService.updateHikingProgress(
+        activeHikingRecordId,
+        dynamicEtaRef.current,
+        remainingDistRef.current,
+        token,
+      );
+    };
+
+    relay(); // 시작 즉시 1회 전송
+    const interval = setInterval(relay, 10000);
+    return () => clearInterval(interval);
+  }, [activeHikingRecordId, token]);
+
+  /* ── 이상징후 감지 시 워치에 "anomaly" 신호 전송 ──
+   * 활성 산행 기록이 있을 때만 작동. 워치 7초 폴러가 감지해 진동+알림 표시.
+   * 응답(status→active) 감지 시 dismissAnomaly()로 모바일 긴급신고 취소.
+   * 응답 없으면 HomeScreen 30초 카운트다운 만료 → sendSos() → /api/emergency. */
+  const watchAnomalySignalledRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      anomalyAlert &&
+      activeHikingRecordId &&
+      !watchAnomalySignalledRef.current
+    ) {
+      // 이상징후 발생 + 산행 중 → 워치에 신호 전송
+      watchAnomalySignalledRef.current = true;
+      apiService.updateHikingStatus(activeHikingRecordId, "anomaly", token);
+      markWatchNotified();
+    }
+
+    if (!anomalyAlert && watchAnomalySignalledRef.current) {
+      // 이상징후 해제(모바일/워치 어디서든) → DB status 복구
+      watchAnomalySignalledRef.current = false;
+      if (activeHikingRecordId) {
+        apiService.updateHikingStatus(activeHikingRecordId, "active", token);
+      }
+    }
+  }, [anomalyAlert, activeHikingRecordId, token, markWatchNotified]);
+
+  /* ── 산행 상태 동기화 폴러: 워치측 일시정지/중단을 감지해 반영 (5초) ── */
+  const isPausedRef = useRef(isPaused);
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
+  const navEndedRef = useRef(false);
+
+  useEffect(() => {
+    if (activeHikingRecordId == null) return;
+    navEndedRef.current = false;
+
+    const poll = async () => {
+      const status = await apiService.getHikingRecordStatus(
+        activeHikingRecordId,
+        token,
+      );
+      if (!status) return;
+
+      // 워치가 "anomaly" → "active" 로 변경 = "괜찮아요" 응답 → 긴급신고 취소
+      if (watchAnomalySignalledRef.current && status !== "anomaly") {
+        watchAnomalySignalledRef.current = false;
+        dismissAnomaly();
+        // 폴백: status가 이미 바뀌었으므로 아래 로직도 계속 처리
+      }
+
+      if (status === "paused" && !isPausedRef.current) {
+        setIsPaused(true);
+      } else if (status === "active" && isPausedRef.current) {
+        setIsPaused(false);
+      } else if (
+        (status === "completed" || status === "cancelled") &&
+        !navEndedRef.current
+      ) {
+        // 워치(또는 외부)에서 산행을 종료함 → 모바일도 종료
+        navEndedRef.current = true;
+        resetNavigationState();
+      }
+    };
+
+    const interval = setInterval(poll, 5000);
+    return () => clearInterval(interval);
+  }, [activeHikingRecordId, token]);
+
   /* ── 실제 알고리즘 데이터 로드 ── */
   useEffect(() => {
     setRemainingDist(initialDistanceKm);
@@ -607,14 +739,14 @@ export default function LiveMapScreen() {
     async function startActiveHikingRecord() {
       try {
         if (previousRecordId) {
-          apiService.cancelHikingRecord(previousRecordId, token).catch(
-            (error) => {
+          apiService
+            .cancelHikingRecord(previousRecordId, token)
+            .catch((error) => {
               console.warn(
                 "[LiveMap] Failed to cancel previous active record:",
                 error,
               );
-            },
-          );
+            });
         }
 
         const record = await apiService.startHikingRecord(
@@ -889,16 +1021,20 @@ export default function LiveMapScreen() {
     const interval = setInterval(() => {
       if (isPaused) return;
 
-      // 1. 센서 데이터 변동 시뮬레이션
-      setHeartRate((prev) => {
-        const next = prev + (Math.random() - 0.5) * 4;
-        return Math.min(160, Math.max(60, next));
-      });
+      // 1. 센서 데이터 변동 시뮬레이션 (워치 데이터가 있으면 시뮬레이션 생략)
+      if (!isWatchHrLive) {
+        setHeartRate((prev) => {
+          const next = prev + (Math.random() - 0.5) * 4;
+          return Math.min(160, Math.max(60, next));
+        });
+      }
 
-      setCurrentPace((prev) => {
-        const next = prev + (Math.random() - 0.5) * 0.2;
-        return Math.min(6.0, Math.max(1.0, next));
-      });
+      if (!hasWatchPaceRef.current) {
+        setCurrentPace((prev) => {
+          const next = prev + (Math.random() - 0.5) * 0.2;
+          return Math.min(6.0, Math.max(1.0, next));
+        });
+      }
 
       setCurrentSlope((prev) => {
         const next = prev + (Math.random() - 0.5) * 2;
@@ -928,7 +1064,48 @@ export default function LiveMapScreen() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [dynamicAnalysis, routePath, currentPace, currentSlope, isPaused]);
+  }, [
+    dynamicAnalysis,
+    routePath,
+    currentPace,
+    currentSlope,
+    isPaused,
+    isWatchHrLive,
+  ]);
+
+  /* ── 워치 생체데이터를 현재 페이스/심박수에 반영 ── */
+  useEffect(() => {
+    if (!latestWatchData) return;
+
+    // 1. 심박수: 워치 값 직접 반영
+    if (latestWatchData.heartRate != null && latestWatchData.heartRate > 0) {
+      setHeartRate(latestWatchData.heartRate);
+    }
+
+    // 2. 페이스: 워치 걸음수 변화량(보폭 0.75m)으로 추정
+    const steps = latestWatchData.steps;
+    const measuredAt = latestWatchData.measuredAt
+      ? new Date(latestWatchData.measuredAt).getTime()
+      : null;
+
+    if (steps != null && measuredAt) {
+      const prev = prevStepsRef.current;
+      if (prev && measuredAt > prev.time && steps >= prev.steps) {
+        const deltaSteps = steps - prev.steps;
+        const deltaHours = (measuredAt - prev.time) / 3600000;
+        if (deltaHours > 0) {
+          const STRIDE_KM = 0.00075; // 보폭 약 0.75m
+          const pace = (deltaSteps * STRIDE_KM) / deltaHours;
+          // 비정상값 제외(0~12km/h)
+          if (pace >= 0 && pace < 12) {
+            setCurrentPace(pace);
+            hasWatchPaceRef.current = true;
+          }
+        }
+      }
+      prevStepsRef.current = { steps, time: measuredAt };
+    }
+  }, [latestWatchData]);
 
   /* SNS 조망점 토글 애니메이션 */
   useEffect(() => {
@@ -985,7 +1162,7 @@ export default function LiveMapScreen() {
     const currentHikeHealthData = recentHealthData.filter(isCurrentHikeData);
     const latestHealthData = isCurrentHikeData(latestWatchData)
       ? latestWatchData
-      : currentHikeHealthData[0] ?? null;
+      : (currentHikeHealthData[0] ?? null);
     const heartRates = currentHikeHealthData
       .map((item) => item.heartRate)
       .filter((value): value is number => Number.isFinite(value));
@@ -1081,7 +1258,13 @@ export default function LiveMapScreen() {
       <NaverMapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        camera={mapRegion ? undefined : { ...currentLocation, zoom }}
+        camera={
+          mapRegion
+            ? undefined
+            : mapCamera.current
+              ? { ...mapCamera.current, zoom }
+              : { ...currentLocation, zoom }
+        }
         region={mapRegion}
         animationDuration={500}
         mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
@@ -1096,6 +1279,15 @@ export default function LiveMapScreen() {
         isShowScaleBar={true}
         isShowZoomControls={false}
         isShowLocationButton={false}
+        onCameraChanged={(e: any) => {
+          mapCamera.current = {
+            latitude: e.latitude,
+            longitude: e.longitude,
+          };
+          if (e.reason !== 0) {
+            setZoom(e.zoom);
+          }
+        }}
       >
         {/* 통합 경로 네트워크 표시 */}
         {unifiedPathPartChunks.map((pathParts, index) => (
