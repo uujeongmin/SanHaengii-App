@@ -9,6 +9,7 @@ import {
   Alert,
   Dimensions,
   Image,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -110,6 +111,8 @@ function getWatchPulseColor(status: WatchHealthStatus, isEnabled: boolean) {
   return "#94a3b8";
 }
 
+const SOS_COUNTDOWN_SEC = 30;
+
 export default function HomeScreen() {
   const navigation = useNavigation<HomeNavProp>();
   const { user, isGuest } = useAuth();
@@ -119,6 +122,12 @@ export default function HomeScreen() {
     status: watchStatus,
     error: watchError,
     setEnabled: setWatchSyncEnabled,
+    anomalyAlert,
+    sosStatus,
+    sendSos,
+    dismissAnomaly,
+    watchAnomalyNotified,
+    triggerTestAnomaly,
   } = useWatchHealth();
   const [selectedMountainId, setSelectedMountainId] = useState<string | null>(
     null,
@@ -132,9 +141,31 @@ export default function HomeScreen() {
     Set<string>
   >(() => new Set());
 
+  // 이상 징후 SOS 카운트다운 (0이 되면 자동 신고)
+  const [sosCountdown, setSosCountdown] = useState(SOS_COUNTDOWN_SEC);
+
   useEffect(() => {
     fetchMountains();
   }, []);
+
+  // 이상 징후 감지 → 30초 카운트다운 후 자동 구조 신고
+  useEffect(() => {
+    if (!anomalyAlert || sosStatus !== "idle") return;
+
+    setSosCountdown(SOS_COUNTDOWN_SEC);
+    const interval = setInterval(() => {
+      setSosCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          sendSos(anomalyAlert.anomaly.type);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [anomalyAlert, sosStatus, sendSos]);
 
   useEffect(() => {
     if (selectedMountainId) {
@@ -320,6 +351,49 @@ export default function HomeScreen() {
             </View>
           </View>
         </View>
+
+        {/* ── [DEV] 이상징후 테스트 패널 ── */}
+        {__DEV__ && (
+          <View style={styles.devPanel}>
+            <View style={styles.devPanelHeader}>
+              <Ionicons name="flask-outline" size={15} color="#7c3aed" />
+              <Text style={styles.devPanelTitle}>이상징후 테스트</Text>
+              <Text style={styles.devPanelBadge}>DEV</Text>
+            </View>
+            <Text style={styles.devPanelDesc}>
+              버튼을 누르면 이상징후 감지 → 워치 알림 → 30초 후 자동신고 흐름을 시뮬레이션합니다.
+            </Text>
+            <View style={styles.devBtnRow}>
+              {(
+                [
+                  { type: "hr_high", label: "심박↑\n(170bpm)", color: "#ef4444" },
+                  { type: "hr_low",  label: "심박↓\n(35bpm)",  color: "#f97316" },
+                  { type: "spo2",    label: "산소↓\n(85%)",    color: "#3b82f6" },
+                  { type: "temp_high", label: "체온↑\n(40.5°)", color: "#8b5cf6" },
+                ] as const
+              ).map(({ type, label, color }) => (
+                <TouchableOpacity
+                  key={type}
+                  style={[styles.devBtn, { borderColor: color }]}
+                  activeOpacity={0.75}
+                  onPress={() => triggerTestAnomaly(type)}
+                >
+                  <Text style={[styles.devBtnText, { color }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {anomalyAlert && (
+              <TouchableOpacity
+                style={styles.devResetBtn}
+                onPress={dismissAnomaly}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle-outline" size={14} color="#6b7280" />
+                <Text style={styles.devResetText}>알림 강제 초기화</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         {/* ── 산 선택 섹션 ── */}
         <View style={styles.sectionHeader}>
@@ -601,6 +675,110 @@ export default function HomeScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* ── 이상 징후 SOS 구조 신고 모달 ── */}
+      <Modal
+        visible={!!anomalyAlert}
+        transparent
+        animationType="fade"
+        onRequestClose={dismissAnomaly}
+      >
+        <View style={styles.sosBackdrop}>
+          <View style={styles.sosCard}>
+            <View style={styles.sosIconWrap}>
+              <Ionicons name="warning" size={34} color="#ffffff" />
+            </View>
+
+            {sosStatus === "idle" && (
+              <>
+                <Text style={styles.sosTitle}>이상 징후 감지</Text>
+                <Text style={styles.sosMessage}>
+                  {anomalyAlert?.anomaly.message}
+                </Text>
+                {watchAnomalyNotified && (
+                  <View style={styles.sosWatchBadge}>
+                    <Ionicons name="watch-outline" size={14} color="#1d4ed8" />
+                    <Text style={styles.sosWatchBadgeText}>
+                      워치에 알림 전송됨 — 응답 대기 중
+                    </Text>
+                  </View>
+                )}
+                <Text style={styles.sosCountdown}>{sosCountdown}</Text>
+                <Text style={styles.sosHint}>
+                  초 후 자동으로 구조 요청을 전송합니다.
+                </Text>
+                <TouchableOpacity
+                  style={styles.sosReportBtn}
+                  activeOpacity={0.85}
+                  onPress={() => sendSos(anomalyAlert?.anomaly.type)}
+                >
+                  <Ionicons name="send" size={18} color="#ffffff" />
+                  <Text style={styles.sosReportBtnText}>지금 구조 요청</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.sosCancelBtn}
+                  activeOpacity={0.85}
+                  onPress={dismissAnomaly}
+                >
+                  <Text style={styles.sosCancelBtnText}>
+                    취소 (정상 상태입니다)
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {sosStatus === "sending" && (
+              <>
+                <Text style={styles.sosTitle}>구조 요청 전송 중…</Text>
+                <ActivityIndicator
+                  size="large"
+                  color="#dc2626"
+                  style={{ marginVertical: 16 }}
+                />
+              </>
+            )}
+
+            {sosStatus === "sent" && (
+              <>
+                <Text style={styles.sosTitle}>🆘 구조 요청 전송 완료</Text>
+                <Text style={styles.sosMessage}>
+                  백엔드(/api/emergency)로 구조 요청을 전송했습니다.
+                </Text>
+                <TouchableOpacity
+                  style={styles.sosReportBtn}
+                  activeOpacity={0.85}
+                  onPress={dismissAnomaly}
+                >
+                  <Text style={styles.sosReportBtnText}>확인</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {sosStatus === "failed" && (
+              <>
+                <Text style={styles.sosTitle}>구조 요청 전송 실패</Text>
+                <Text style={styles.sosMessage}>
+                  전송에 실패했습니다. 즉시 119에 직접 전화하세요.
+                </Text>
+                <TouchableOpacity
+                  style={styles.sosReportBtn}
+                  activeOpacity={0.85}
+                  onPress={() => sendSos(anomalyAlert?.anomaly.type)}
+                >
+                  <Text style={styles.sosReportBtnText}>다시 시도</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.sosCancelBtn}
+                  activeOpacity={0.85}
+                  onPress={dismissAnomaly}
+                >
+                  <Text style={styles.sosCancelBtnText}>닫기</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -924,4 +1102,159 @@ const styles = StyleSheet.create({
   },
   emptyText: { fontSize: 14, color: "#9ca3af" },
   row: { flexDirection: "row", alignItems: "center" },
+
+  /* ── 이상 징후 SOS 모달 ── */
+  sosBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 28,
+  },
+  sosCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: "#ffffff",
+    borderRadius: 24,
+    paddingVertical: 28,
+    paddingHorizontal: 24,
+    alignItems: "center",
+  },
+  sosIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#dc2626",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  sosTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+    textAlign: "center",
+  },
+  sosMessage: {
+    fontSize: 14,
+    color: "#4b5563",
+    textAlign: "center",
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  sosCountdown: {
+    fontSize: 48,
+    fontWeight: "900",
+    color: "#dc2626",
+    marginTop: 12,
+  },
+  sosHint: {
+    fontSize: 12,
+    color: "#9ca3af",
+    textAlign: "center",
+    marginTop: -4,
+  },
+  devPanel: {
+    marginHorizontal: 20,
+    marginBottom: 16,
+    backgroundColor: "#faf5ff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e9d5ff",
+    padding: 14,
+    gap: 10,
+  },
+  devPanelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  devPanelTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#7c3aed",
+    flex: 1,
+  },
+  devPanelBadge: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#ffffff",
+    backgroundColor: "#7c3aed",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  devPanelDesc: {
+    fontSize: 11,
+    color: "#6b7280",
+    lineHeight: 16,
+  },
+  devBtnRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  devBtn: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderRadius: 10,
+    paddingVertical: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+  },
+  devBtnText: {
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
+    lineHeight: 15,
+  },
+  devResetBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 6,
+    backgroundColor: "#f3f4f6",
+    borderRadius: 8,
+  },
+  devResetText: {
+    fontSize: 11,
+    color: "#6b7280",
+    fontWeight: "600",
+  },
+  sosWatchBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: "#eff6ff",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 4,
+  },
+  sosWatchBadgeText: {
+    fontSize: 11,
+    color: "#1d4ed8",
+    fontWeight: "600",
+  },
+  sosReportBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#dc2626",
+    borderRadius: 14,
+    paddingVertical: 14,
+    width: "100%",
+    marginTop: 18,
+  },
+  sosReportBtnText: { color: "#ffffff", fontSize: 15, fontWeight: "700" },
+  sosCancelBtn: {
+    paddingVertical: 12,
+    width: "100%",
+    alignItems: "center",
+    marginTop: 8,
+  },
+  sosCancelBtnText: { color: "#6b7280", fontSize: 14, fontWeight: "600" },
 });
