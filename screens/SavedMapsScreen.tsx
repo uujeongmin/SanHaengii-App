@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../App";
+import { useAuth } from "../contexts/AuthContext";
 import { MountainCourse } from "../data/api";
 
 type SavedMapsNavProp = NativeStackNavigationProp<
@@ -22,17 +23,19 @@ type SavedMapsNavProp = NativeStackNavigationProp<
   "SavedMaps"
 >;
 
-const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
+const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
 
 export default function SavedMapsScreen() {
   const navigation = useNavigation<SavedMapsNavProp>();
+  const { user } = useAuth();
   const [savedCourses, setSavedCourses] = useState<MountainCourse[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadSavedMaps = useCallback(async () => {
     try {
       setLoading(true);
-      const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+      const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
+      const savedStr = await SecureStore.getItemAsync(savedKey);
       if (!savedStr) {
         setSavedCourses([]);
         return;
@@ -46,7 +49,7 @@ export default function SavedMapsScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user?.id]);
 
   useFocusEffect(
     useCallback(() => {
@@ -63,8 +66,9 @@ export default function SavedMapsScreen() {
         onPress: async () => {
           try {
             const updated = savedCourses.filter((c) => c.id !== courseId);
+            const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
             await SecureStore.setItemAsync(
-              SAVED_MAPS_KEY,
+              savedKey,
               JSON.stringify(updated),
             );
             setSavedCourses(updated);

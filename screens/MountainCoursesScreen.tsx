@@ -16,9 +16,10 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { CourseParams, RootStackParamList } from "../App";
+import { useAuth } from "../contexts/AuthContext";
 import { apiService, type Mountain, type MountainCourse } from "../data/api";
 
-const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
+const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
 
 type MountainCoursesNavProp = NativeStackNavigationProp<
   RootStackParamList,
@@ -42,6 +43,7 @@ export default function MountainCoursesScreen() {
   const navigation = useNavigation<MountainCoursesNavProp>();
   const route = useRoute<MountainCoursesRouteProp>();
   const { mountainId } = route.params;
+  const { user } = useAuth();
 
   const [mountain, setMountain] = useState<Mountain | null>(null);
   const [courses, setCourses] = useState<MountainCourse[]>([]);
@@ -57,12 +59,13 @@ export default function MountainCoursesScreen() {
   useFocusEffect(
     useCallback(() => {
       loadSavedIds();
-    }, []),
+    }, [user?.id]),
   );
 
   async function loadSavedIds() {
     try {
-      const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+      const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
+      const savedStr = await SecureStore.getItemAsync(savedKey);
       if (savedStr) {
         const savedCourses: MountainCourse[] = JSON.parse(savedStr);
         setSavedCourseIds(new Set(savedCourses.map((c) => c.id)));
@@ -78,7 +81,8 @@ export default function MountainCoursesScreen() {
     if (savingId !== null) return;
     setSavingId(course.id);
     try {
-      const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+      const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
+      const savedStr = await SecureStore.getItemAsync(savedKey);
       const savedCourses: MountainCourse[] = savedStr ? JSON.parse(savedStr) : [];
       const isAlreadySaved = savedCourses.some((c) => c.id === course.id);
 
@@ -86,7 +90,7 @@ export default function MountainCoursesScreen() {
         ? savedCourses.filter((c) => c.id !== course.id)
         : [...savedCourses, course];
 
-      await SecureStore.setItemAsync(SAVED_MAPS_KEY, JSON.stringify(updated));
+      await SecureStore.setItemAsync(savedKey, JSON.stringify(updated));
       setSavedCourseIds(new Set(updated.map((c) => c.id)));
     } catch {
       // ignore

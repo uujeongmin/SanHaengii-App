@@ -223,6 +223,8 @@ export interface StartHikingRecordInput {
   mountainName: string | null;
   courseId?: string | null;
   courseName?: string | null;
+  durationMinutes?: number | null;
+  distanceKm?: number | null;
 }
 
 export interface FinishHikingRecordInput {
@@ -957,8 +959,8 @@ export const apiService = {
       mountain_name: record.mountainName,
       status: "active",
       started_at: now,
-      duration_minutes: null,
-      distance_km: null,
+      duration_minutes: record.durationMinutes ?? null,
+      distance_km: record.distanceKm ?? null,
       avg_heart_rate: null,
       max_altitude: null,
       calories: null,
@@ -1867,6 +1869,45 @@ export const apiService = {
     } catch (error) {
       console.error("[API] Error in getRecentHealthData:", error);
       throw error;
+    }
+  },
+
+  /**
+   * 모바일 내비게이션의 실시간 남은 ETA/거리를 Flask 중계 서버에 전송합니다.
+   * 워치 앱이 이 값을 30초마다 조회해 대시보드에 표시합니다.
+   */
+  async postHikingRelay(
+    userId: number,
+    etaMinutes: number,
+    remainingKm: number,
+  ): Promise<void> {
+    const url = `${LEGACY_TRAIL_API_BASE_URL}/api/hiking-relay`;
+    try {
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          eta_minutes: Math.round(etaMinutes),
+          remaining_km: Math.round(remainingKm * 100) / 100,
+        }),
+      });
+    } catch {
+      // 로컬 Flask 서버 미실행 시 무시
+    }
+  },
+
+  // 로그인 토큰을 워치로 중계 (워치가 폴링해 Railway 백엔드 인증에 사용)
+  async postWatchCredentials(userId: number, token: string): Promise<void> {
+    const url = `${LEGACY_TRAIL_API_BASE_URL}/api/watch-credentials`;
+    try {
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, token }),
+      });
+    } catch {
+      // 로컬 Flask 서버 미실행 시 무시
     }
   },
 

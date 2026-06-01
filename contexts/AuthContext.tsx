@@ -122,6 +122,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (isMounted) {
           setToken(storedToken);
           setUser(currentUser);
+          // 워치 연동: 저장된 세션 복원 시에도 토큰을 워치로 재전달
+          apiService
+            .postWatchCredentials(currentUser.id, storedToken)
+            .catch(() => {});
         }
       } catch (error) {
         console.warn("[Auth] Stored session is invalid:", error);
@@ -165,6 +169,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await SecureStore.setItemAsync(AUTH_TOKEN_KEY, loginResponse.token);
       setToken(loginResponse.token);
       setUser(loginResponse.user);
+
+      // 워치 연동: 로그인 토큰+user_id를 Flask relay로 전달 (워치가 폴링해 사용, 재빌드 불필요)
+      apiService
+        .postWatchCredentials(loginResponse.user.id, loginResponse.token)
+        .catch(() => {});
     } finally {
       setIsSigningIn(false);
     }

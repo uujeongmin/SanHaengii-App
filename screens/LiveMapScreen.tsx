@@ -51,6 +51,7 @@ type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, "내비게이션
 type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
 const UNIFIED_PATH_CHUNK_SIZE = 1200;
 const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
+const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
 
 /**
  * 문자열을 분 단위 숫자로 변환합니다.
@@ -221,7 +222,8 @@ export default function LiveMapScreen() {
   const navigation = useNavigation<LiveMapNavProp>();
   const route = useRoute<LiveMapRouteProp>();
   const { isGuest, token, user } = useAuth();
-  const { latestData: latestWatchData } = useWatchHealth();
+  const { latestData: latestWatchData, setEnabled: setWatchEnabled } =
+    useWatchHealth();
 
   /* 코스 파라미터 (홈에서 전달, 없으면 기본값) */
   const params = route.params as CourseParams | undefined;
@@ -395,8 +397,8 @@ export default function LiveMapScreen() {
         // 카메라를 이동시키면 SDK에서 자동으로 해당 영역의 타일을 다운로드하여 캐싱합니다.
 
         // 4. 로컬 저장소에 저장 정보 기록
-        const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
-        const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+        const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
+        const savedStr = await SecureStore.getItemAsync(savedKey);
         let savedList = savedStr ? JSON.parse(savedStr) : [];
 
         // 중복 확인
@@ -413,7 +415,7 @@ export default function LiveMapScreen() {
             path: routePath, // 오프라인 상세 화면에서 그리기 위해 경로 데이터 추가
           });
           await SecureStore.setItemAsync(
-            SAVED_MAPS_KEY,
+            savedKey,
             JSON.stringify(savedList),
           );
         }
@@ -451,10 +453,11 @@ export default function LiveMapScreen() {
             distanceInterval: 10,
           },
           (loc) => {
-            setCurrentLocation({
+            const newLoc = {
               latitude: loc.coords.latitude,
               longitude: loc.coords.longitude,
-            });
+            };
+            setCurrentLocation(newLoc);
           },
         );
       } catch (err) {
@@ -544,10 +547,63 @@ export default function LiveMapScreen() {
   const hikeStartedAt = useRef(Date.now());
   const activeHikingRecordIdRef = useRef<number | null>(null);
   const activeHikingRecordKeyRef = useRef<string | null>(null);
+  const latestWatchDataRef = useRef(latestWatchData);
+  const prevWatchStepsRef = useRef<{ steps: number; time: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     activeHikingRecordIdRef.current = activeHikingRecordId;
   }, [activeHikingRecordId]);
+
+  /* ── 워치 건강 데이터 자동 활성화 (코스 선택 시) ── */
+  useEffect(() => {
+    if (courseId && !isGuest) {
+      setWatchEnabled(true);
+    }
+  }, [courseId, isGuest, setWatchEnabled]);
+
+  /* ── 30초마다 실시간 ETA/거리를 Flask 중계 서버에 전송 (워치 연동) ── */
+  useEffect(() => {
+    if (!user || isGuest || !courseId) return;
+
+    const post = () => {
+      if (dynamicEta > 0 || remainingDist > 0) {
+        apiService.postHikingRelay(user.id, dynamicEta, remainingDist);
+      }
+    };
+
+    post(); // 즉시 1회 전송
+    const interval = setInterval(post, 10_000);
+    return () => clearInterval(interval);
+  }, [user, isGuest, courseId, dynamicEta, remainingDist]);
+
+  /* ── 워치 심박수 반영 ── */
+  useEffect(() => {
+    latestWatchDataRef.current = latestWatchData;
+    if (latestWatchData?.heartRate && latestWatchData.heartRate > 0) {
+      setHeartRate(latestWatchData.heartRate);
+    }
+  }, [latestWatchData]);
+
+  /* ── 워치 걸음수 → 페이스 계산 ── */
+  useEffect(() => {
+    if (!latestWatchData?.steps || !latestWatchData.measuredAt) return;
+    const now = new Date(latestWatchData.measuredAt).getTime();
+    const steps = latestWatchData.steps;
+    const prev = prevWatchStepsRef.current;
+    if (prev && prev.steps > 0 && steps > prev.steps) {
+      const stepsDelta = steps - prev.steps;
+      const timeDeltaHrs = (now - prev.time) / 3_600_000;
+      if (timeDeltaHrs > 0) {
+        const paceKmh = (stepsDelta * 0.00065) / timeDeltaHrs;
+        if (paceKmh >= 0.3 && paceKmh <= 8) {
+          setCurrentPace(paceKmh);
+        }
+      }
+    }
+    prevWatchStepsRef.current = { steps, time: now };
+  }, [latestWatchData?.steps, latestWatchData?.measuredAt]);
 
   /* ── 실제 알고리즘 데이터 로드 ── */
   useEffect(() => {
@@ -582,14 +638,14 @@ export default function LiveMapScreen() {
     async function startActiveHikingRecord() {
       try {
         if (previousRecordId) {
-          apiService.cancelHikingRecord(previousRecordId, token).catch(
-            (error) => {
+          apiService
+            .cancelHikingRecord(previousRecordId, token)
+            .catch((error) => {
               console.warn(
                 "[LiveMap] Failed to cancel previous active record:",
                 error,
               );
-            },
-          );
+            });
         }
 
         const record = await apiService.startHikingRecord(
@@ -598,6 +654,8 @@ export default function LiveMapScreen() {
             mountainName: mountainName || "선택한 산",
             courseId,
             courseName,
+            durationMinutes: initialMinutes > 0 ? initialMinutes : null,
+            distanceKm: initialDistanceKm > 0 ? initialDistanceKm : null,
           },
           token,
         );
@@ -866,13 +924,19 @@ export default function LiveMapScreen() {
     const interval = setInterval(() => {
       if (isPaused) return;
 
-      // 1. 센서 데이터 변동 시뮬레이션
+      // 1. 센서 데이터 변동 시뮬레이션 (워치 실데이터 없을 때만)
       setHeartRate((prev) => {
+        if (
+          latestWatchDataRef.current?.heartRate &&
+          latestWatchDataRef.current.heartRate > 0
+        )
+          return prev;
         const next = prev + (Math.random() - 0.5) * 4;
         return Math.min(160, Math.max(60, next));
       });
 
       setCurrentPace((prev) => {
+        if (prevWatchStepsRef.current) return prev; // 걸음수 기반 페이스 사용 중
         const next = prev + (Math.random() - 0.5) * 0.2;
         return Math.min(6.0, Math.max(1.0, next));
       });
@@ -956,7 +1020,7 @@ export default function LiveMapScreen() {
     const currentHikeHealthData = recentHealthData.filter(isCurrentHikeData);
     const latestHealthData = isCurrentHikeData(latestWatchData)
       ? latestWatchData
-      : currentHikeHealthData[0] ?? null;
+      : (currentHikeHealthData[0] ?? null);
     const heartRates = currentHikeHealthData
       .map((item) => item.heartRate)
       .filter((value): value is number => Number.isFinite(value));
