@@ -6,6 +6,8 @@ import {
   MOUNTAINS,
 } from "./mountains";
 
+export type { MountainCourse } from "./mountains";
+
 export const DEV_TEST_TOKEN =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
 
@@ -327,7 +329,10 @@ function normalizeHikingRecord(row: any): HikingRecord {
     avgHeartRate: toNullableNumber(row.avgHeartRate ?? row.avg_heart_rate),
     maxAltitude,
     elevationGainM: toNullableNumber(
-      row.elevationGainM ?? row.elevation_gain_m ?? row.elevation_gain ?? maxAltitude,
+      row.elevationGainM ??
+        row.elevation_gain_m ??
+        row.elevation_gain ??
+        maxAltitude,
     ),
     createdAt: row.createdAt ?? row.created_at ?? null,
     startedAt: row.startedAt ?? row.started_at ?? null,
@@ -1828,10 +1833,7 @@ export const apiService = {
   /**
    * 현재 로그인 사용자의 최근 생체 데이터 목록을 가져옵니다. 그래프 표시용입니다.
    */
-  async getRecentHealthData(
-    token: string,
-    limit = 60,
-  ): Promise<HealthData[]> {
+  async getRecentHealthData(token: string, limit = 60): Promise<HealthData[]> {
     const safeLimit = Math.max(1, Math.min(300, Math.round(limit)));
     const query = new URLSearchParams({
       limit: String(safeLimit),

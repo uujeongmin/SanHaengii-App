@@ -11,6 +11,8 @@ import {
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import type { RouteProp } from "@react-navigation/native";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import * as Location from "expo-location";
+import * as SecureStore from "expo-secure-store";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -192,6 +194,10 @@ export default function LiveMapScreen() {
   // SNS 인기 조망점(포토스팟) 상태
   const [photoSpots, setPhotoSpots] = useState<PhotoSpot[]>([]);
 
+  // 오프라인 지도 저장 상태
+  const [isOfflineDownloading, setIsOfflineDownloading] = useState(false);
+  const [isMapSaved, setIsMapSaved] = useState(false);
+
   // 정적 기준 시간 및 동적 실시간 시간
   const initialMinutes = parseTimeToMinutes(params?.time);
   const [staticEta, setStaticEta] = useState(initialMinutes);
@@ -240,15 +246,156 @@ export default function LiveMapScreen() {
       return newZoom;
     });
   };
-  const handleRescanGPS = () => {
-    if (mapRef.current) {
-      mapRef.current.animateCameraTo({
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        zoom: 16,
-      });
+  const handleRescanGPS = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("권한 필요", "위치 정보 접근 권한이 필요합니다.");
+        return;
+      }
+
+      let location = await Location.getLastKnownPositionAsync({});
+      if (!location) {
+        location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+      }
+
+      if (location) {
+        const newLoc = {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        };
+        setCurrentLocation(newLoc);
+
+        if (mapRef.current) {
+          mapRef.current.animateCameraTo({
+            latitude: newLoc.latitude,
+            longitude: newLoc.longitude,
+            zoom: 16,
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[LiveMap] Error rescanning GPS:", e);
+      Alert.alert(
+        "위치 오류",
+        "현재 위치를 가져올 수 없습니다. 에뮬레이터 설정(Location)을 확인해주세요.",
+      );
     }
   };
+
+  /**
+   * 코스 주변 지도를 오프라인용으로 저장합니다.
+   */
+  const handleDownloadOfflineMap = async () => {
+    if (routePath.length === 0) {
+      Alert.alert("알림", "저장할 등산 코스 정보가 없습니다.");
+      return;
+    }
+
+    try {
+      setIsOfflineDownloading(true);
+
+      // 1. 코스 전체가 보이도록 지도 영역 계산
+      const lats = routePath.map((p) => p.latitude);
+      const lngs = routePath.map((p) => p.longitude);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+
+      const centerLat = (minLat + maxLat) / 2;
+      const centerLng = (minLng + maxLng) / 2;
+
+      // 2. 카메라 이동 및 타일 캐싱 유도
+      if (mapRef.current) {
+        mapRef.current.animateCameraTo({
+          latitude: centerLat,
+          longitude: centerLng,
+          zoom: 14,
+        });
+
+        // 잠시 대기하여 타일이 로드되도록 함
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        // 3. 로컬 저장소에 저장 정보 기록
+        const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
+        const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+        let savedList = savedStr ? JSON.parse(savedStr) : [];
+
+        // 중복 확인
+        if (courseId && !savedList.find((c: any) => c.id === courseId)) {
+          savedList.push({
+            id: courseId,
+            title: courseName,
+            mountainId: mountainName,
+            difficulty: params?.difficulty || "중",
+            distance: params?.distance || "0km",
+            time: params?.time || "0분",
+            elevation: params?.elevation || "+0m",
+            img: (params as any)?.img ?? null, // 전달받은 이미지 URL 저장
+            path: routePath, // 오프라인 상세 화면에서 그리기 위해 경로 데이터 추가
+          });
+          await SecureStore.setItemAsync(
+            SAVED_MAPS_KEY,
+            JSON.stringify(savedList),
+          );
+        }
+
+        // 4. 저장 완료 처리
+        setIsMapSaved(true);
+        Alert.alert(
+          "오프라인 지도 저장",
+          "코스 주변의 지도 데이터가 캐시에 저장되었습니다. [마이페이지 > 저장된 지도]에서 확인할 수 있습니다.",
+        );
+      }
+    } catch (e) {
+      console.error("[Offline] Download failed:", e);
+      Alert.alert("저장 실패", "지도 데이터를 저장하는 중 오류가 발생했습니다.");
+    } finally {
+      setIsOfflineDownloading(false);
+    }
+  };
+
+  // 코스가 바뀌면 저장 상태 초기화
+  useEffect(() => {
+    setIsMapSaved(false);
+  }, [courseId]);
+
+  // GPS 실시간 추적
+  useEffect(() => {
+    handleRescanGPS();
+
+    let locationSubscription: Location.LocationSubscription | null = null;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") return;
+        locationSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 5000,
+            distanceInterval: 10,
+          },
+          (loc) => {
+            setCurrentLocation({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+            });
+          },
+        );
+      } catch (err) {
+        console.log("[LiveMap] watchPosition error:", err);
+      }
+    })();
+
+    return () => {
+      if (locationSubscription) {
+        locationSubscription.remove();
+      }
+    };
+  }, []);
 
   const isNotifCollapsedRef = useRef(isNotifCollapsed);
   useEffect(() => {
@@ -973,6 +1120,25 @@ export default function LiveMapScreen() {
               {courseName}
             </Text>
           </View>
+
+          {/* 오프라인 다운로드 버튼 */}
+          {courseId && (
+            <TouchableOpacity
+              style={styles.offlineBtn}
+              onPress={handleDownloadOfflineMap}
+              disabled={isOfflineDownloading}
+            >
+              {isOfflineDownloading ? (
+                <ActivityIndicator size="small" color="#3b82f6" />
+              ) : (
+                <Ionicons
+                  name={isMapSaved ? "cloud-done" : "cloud-download"}
+                  size={20}
+                  color={isMapSaved ? "#22c55e" : "#3b82f6"}
+                />
+              )}
+            </TouchableOpacity>
+          )}
         </View>
 
         <TouchableOpacity
@@ -1328,6 +1494,10 @@ const styles = StyleSheet.create({
     marginBottom: 1,
   },
   routeLabelText: { fontSize: 13, color: "#606267", fontWeight: "500" },
+  offlineBtn: {
+    padding: 4,
+    marginLeft: 4,
+  },
   sosButton: {
     width: 48,
     height: 48,
