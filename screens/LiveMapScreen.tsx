@@ -51,6 +51,7 @@ type LiveMapNavProp = BottomTabNavigationProp<RootTabParamList, "내비게이션
 type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
 const UNIFIED_PATH_CHUNK_SIZE = 1200;
 const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
+const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
 
 const markerBubbleStyle = {
   width: 36,
@@ -395,9 +396,9 @@ export default function LiveMapScreen() {
         // 잠시 대기하여 타일이 로드되도록 함
         await new Promise((resolve) => setTimeout(resolve, 1500));
 
-        // 3. 로컬 저장소에 저장 정보 기록
-        const SAVED_MAPS_KEY = "sanhaengii_saved_maps";
-        const savedStr = await SecureStore.getItemAsync(SAVED_MAPS_KEY);
+        // 3. 로컬 저장소에 저장 정보 기록 (사용자별 키)
+        const savedKey = `${SAVED_MAPS_KEY_BASE}_${user?.id ?? "guest"}`;
+        const savedStr = await SecureStore.getItemAsync(savedKey);
         let savedList = savedStr ? JSON.parse(savedStr) : [];
 
         // 중복 확인
@@ -413,10 +414,7 @@ export default function LiveMapScreen() {
             img: (params as any)?.img ?? null, // 전달받은 이미지 URL 저장
             path: routePath, // 오프라인 상세 화면에서 그리기 위해 경로 데이터 추가
           });
-          await SecureStore.setItemAsync(
-            SAVED_MAPS_KEY,
-            JSON.stringify(savedList),
-          );
+          await SecureStore.setItemAsync(savedKey, JSON.stringify(savedList));
         }
 
         // 4. 저장 완료 처리
