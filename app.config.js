@@ -1,10 +1,19 @@
-import 'dotenv/config';
+import "dotenv/config";
 
 export default ({ config }) => {
   const kakaoNativeAppKey = process.env.EXPO_PUBLIC_KAKAO_NATIVE_APP_KEY || "";
   const plugins = [
     "expo-router",
     "expo-secure-store",
+    [
+      "expo-location",
+      {
+        locationWhenInUsePermission:
+          "산행 중 현위치를 지도에 표시하고 경로를 안내하기 위해 위치 정보가 필요합니다.",
+        isIosBackgroundLocationEnabled: false,
+        isAndroidBackgroundLocationEnabled: false,
+      },
+    ],
     [
       "expo-build-properties",
       {

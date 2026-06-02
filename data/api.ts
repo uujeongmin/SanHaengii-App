@@ -8,6 +8,13 @@ import {
 
 export type { MountainCourse } from "./mountains";
 
+// 산 메타 폴백(이름→지역/고도/설명/이미지). 주 소스는 unified_mountain_paths이며,
+// 그 조회 실패 시에만 참조하는 보조 맵(비어 있어도 기본값으로 폴백됨).
+const SEOUL_MOUNTAIN_META: Record<
+  string,
+  { region?: string; altitude?: number; description?: string; img?: string }
+> = {};
+
 export const DEV_TEST_TOKEN =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwic29jaWFsVHlwZSI6InRlc3QiLCJzb2NpYWxJZCI6InRlc3RfdXNlciIsImV4cCI6MTc4MTg1OTgxNn0.Xlf6e7iU8nzHFoZ3Hw9d39vWndTXOsBAwKgmsIcBA6k";
 
@@ -157,6 +164,27 @@ interface SeoulMountainPathRow {
   info_id?: number | null;
 }
 
+/** recommended_courses 테이블 행 타입 */
+interface RecommendedCourseRow {
+  id: number;
+  mountain_name: string;
+  course_name: string;
+  total_distance_km: number | string | null;
+  path_coords?: unknown;
+  created_at?: string | null;
+}
+
+/** seoul_mountain_info 테이블 행 타입 (산 목록 소스, 철자 주의: mountain) */
+interface SeoulMountainInfoRow {
+  id?: number;
+  mountain_name: string;
+  address?: string | null;
+  height?: number | string | null;
+  description?: string | null;
+  short_description?: string | null;
+  image_url?: string | null;
+}
+
 export interface AuthUser {
   id: number;
   socialType: string;
@@ -264,7 +292,10 @@ export function detectHealthAnomaly(
   if (hr != null && hr < 40 && hr > 0)
     return { type: "서맥", message: "심박수가 너무 낮습니다 (서맥 감지)" };
   if (spo2 != null && spo2 < 90 && spo2 > 0)
-    return { type: "저산소증", message: "산소포화도가 낮습니다 (저산소증 위험)" };
+    return {
+      type: "저산소증",
+      message: "산소포화도가 낮습니다 (저산소증 위험)",
+    };
   if (temp != null && temp > 39)
     return { type: "고열", message: "체온이 너무 높습니다 (고열 감지)" };
   if (temp != null && temp < 35 && temp > 0)
@@ -304,9 +335,10 @@ export interface LoginResponse {
   isNewUser: boolean;
 }
 
-let cachedMountains: Mountain[] | null = null;
 let cachedCourseSummaries: SeoulMountainPathRow[] | null = null;
 const courseCache = new Map<string, MountainCourse[]>();
+let cachedRecommendedMountains: Mountain[] | null = null;
+let cachedRecommendedRows: RecommendedCourseRow[] | null = null;
 const unifiedMountainPathCache = new Map<string, UnifiedMountainPath | null>();
 const courseRouteCache = new Map<string, PathResult>();
 
@@ -672,6 +704,309 @@ function getMountainNameFromId(mountainId: string): string {
   return staticMountain?.name ?? mountainId;
 }
 
+// ── seoul_mountain_info 테이블 유틸 (산 목록 소스) ───────────────────────
+
+// 산 정보 테이블. 올바른 철자 우선, 백엔드 화이트리스트의 타이포(mountian) 폴백.
+// join 키 = mountain_name
+const SEOUL_MOUNTAIN_INFO_TABLES = ["seoul_mountain_info"];
+
+const SEOUL_MOUNTAIN_INFO_SELECT =
+  "id,mountain_name,address,height,description,short_description,image_url";
+let cachedMountainInfoRows: SeoulMountainInfoRow[] | null = null;
+
+/**
+ * 산 정보 테이블에서 메타데이터를 가져옵니다(철자 후보 순차 시도).
+ * 모든 후보 실패 시 빈 배열을 반환해 호출부가 recommended_courses로 폴백하도록 합니다.
+ */
+async function getSeoulMountainInfoRows(): Promise<SeoulMountainInfoRow[]> {
+  if (cachedMountainInfoRows) return cachedMountainInfoRows;
+
+  for (const table of SEOUL_MOUNTAIN_INFO_TABLES) {
+    try {
+      const rows = await fetchPagedDataRows<SeoulMountainInfoRow>(
+        table,
+        SEOUL_MOUNTAIN_INFO_SELECT,
+      );
+      if (rows.length > 0) {
+        console.log(`[API] 산 목록 소스: ${table} (${rows.length}개)`);
+        cachedMountainInfoRows = rows;
+        return cachedMountainInfoRows;
+      }
+    } catch (error) {
+      console.warn(`[API] ${table} 조회 실패, 다음 후보 시도:`, error);
+    }
+  }
+
+  console.warn("[API] 모든 산 정보 테이블 실패 → recommended_courses로 폴백");
+  cachedMountainInfoRows = [];
+  return cachedMountainInfoRows;
+}
+
+/**
+ * seoul_mountain_info 행들로 Mountain[]을 만듭니다.
+ * mountain_name을 키로 recommended_courses의 코스 수(countByName)와 엮습니다.
+ * 코스가 1개 이상인 산만 포함합니다(내비게이션 가능 대상).
+ */
+function buildMountainsFromInfo(
+  infoRows: SeoulMountainInfoRow[],
+  countByName: Map<string, number>,
+): Mountain[] {
+  const mountains: Mountain[] = [];
+  const seen = new Set<string>();
+
+  infoRows.forEach((info) => {
+    const name = cleanText(info.mountain_name);
+    if (!name || seen.has(name)) return;
+    const courseCount = countByName.get(name) ?? 0;
+    if (courseCount <= 0) return; // 코스 없는 산은 제외
+    seen.add(name);
+
+    const meta = SEOUL_MOUNTAIN_META[name];
+    mountains.push({
+      id: mountainNameToId(name),
+      name,
+      region: cleanText(info.address, meta?.region ?? "서울"),
+      altitude: toDisplayAltitude(info.height ?? meta?.altitude),
+      description: cleanText(
+        info.description ?? info.short_description,
+        meta?.description ?? `${name} 등산 코스`,
+      ),
+      img: cleanImageUrl(info.image_url, meta?.img ?? DEFAULT_MOUNTAIN_IMAGE),
+      courseCount,
+    });
+  });
+
+  return mountains;
+}
+
+// ── recommended_courses_v2 테이블 유틸 (개선된 코스 데이터 소스) ──────────
+
+const RECOMMENDED_COURSES_TABLE = "recommended_courses_v2";
+
+function courseDifficultyToLevel(
+  difficulty: string | null | undefined,
+): MountainCourse["difficulty"] {
+  if (!difficulty) return "하";
+  if (difficulty.includes("상") || difficulty.includes("어려")) return "상";
+  if (difficulty.includes("중") || difficulty.includes("보통")) return "중";
+  return "하";
+}
+
+function mountainNameToId(mountainName: string): string {
+  return mountainName
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-")
+    .replace(/[^\w-가-힣]/g, "");
+}
+
+function getRecommendedCourseId(row: RecommendedCourseRow): string {
+  return String(row.id);
+}
+
+function getRecommendedMountainName(row: RecommendedCourseRow): string {
+  return cleanText(row.mountain_name, "추천 산");
+}
+
+function getRecommendedMountainId(row: RecommendedCourseRow): string {
+  return mountainNameToId(getRecommendedMountainName(row));
+}
+
+function getRecommendedDistanceKm(row: RecommendedCourseRow): number {
+  const distance = Number(row.total_distance_km);
+  return Number.isFinite(distance) && distance > 0 ? distance : 0;
+}
+
+function getRecommendedDurationMinutes(row: RecommendedCourseRow): number {
+  const distanceKm = getRecommendedDistanceKm(row);
+  if (distanceKm > 0) return Math.max(1, Math.round((distanceKm / 3) * 60));
+
+  return 1;
+}
+
+function getRecommendedPath(row: RecommendedCourseRow): Coordinate[] {
+  return flattenPathCoords(row.path_coords);
+}
+
+async function fetchRecommendedRowsFromSupabase(): Promise<
+  RecommendedCourseRow[]
+> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error("Supabase 환경 변수가 설정되지 않았습니다.");
+  }
+
+  const query = new URLSearchParams({
+    select:
+      "id,mountain_name,course_name,total_distance_km,path_coords,created_at",
+    order: "id.asc",
+    limit: String(RAILWAY_TABLE_PAGE_SIZE),
+  });
+  const url = `${SUPABASE_URL}/rest/v1/${RECOMMENDED_COURSES_TABLE}?${query.toString()}`;
+  const response = await fetch(url, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+  });
+
+  if (!response.ok) {
+    const message = await getErrorMessage(
+      response,
+      `Failed to fetch ${RECOMMENDED_COURSES_TABLE} from Supabase (Status: ${response.status})`,
+    );
+    throw new Error(message);
+  }
+
+  return unwrapRows<RecommendedCourseRow>(await response.json());
+}
+
+async function getRecommendedCourseRows(): Promise<RecommendedCourseRow[]> {
+  if (cachedRecommendedRows) return cachedRecommendedRows;
+
+  try {
+    cachedRecommendedRows = await fetchPagedDataRows<RecommendedCourseRow>(
+      RECOMMENDED_COURSES_TABLE,
+      "id,mountain_name,course_name,total_distance_km,path_coords,created_at",
+    );
+  } catch (error) {
+    console.warn("[API] Falling back to Supabase recommended_courses:", error);
+    cachedRecommendedRows = await fetchRecommendedRowsFromSupabase();
+  }
+
+  return cachedRecommendedRows;
+}
+
+// 산 이름 → {image_url, height(정상 고도)} 메타 캐시 (unified_mountain_paths에서 1회 로드)
+interface UnifiedMeta {
+  img: string;
+  height: number;
+  region: string;
+  description: string;
+}
+let cachedUnifiedMeta: Map<string, UnifiedMeta> | null = null;
+
+async function getUnifiedMetaMap(): Promise<Map<string, UnifiedMeta>> {
+  if (cachedUnifiedMeta) return cachedUnifiedMeta;
+  const map = new Map<string, UnifiedMeta>();
+  try {
+    const rows = await fetchDataRows<UnifiedMountainPath>(
+      "unified_mountain_paths",
+      {
+        select: "mountain_name,height,image_url,region,description",
+        limit: "1000",
+      },
+    );
+    rows.forEach((row) => {
+      const name = normalizeMountainKey(row.mountain_name);
+      if (!name) return;
+      map.set(name, {
+        img: cleanImageUrl(row.image_url, DEFAULT_COURSE_IMAGE),
+        height: toDisplayAltitude(row.height),
+        region: cleanText(row.region, ""),
+        description: cleanText(row.description, ""),
+      });
+    });
+  } catch (error) {
+    console.warn("[API] unified_mountain_paths 메타 로드 실패:", error);
+  }
+  cachedUnifiedMeta = map;
+  return cachedUnifiedMeta;
+}
+
+/**
+ * 코스 경로의 정상(끝점)에 가장 가까운 노드의 고도를 반환합니다.
+ * recommended_courses_v2는 entrance→peak 순으로 저장되어 path의 마지막 점이 정상.
+ * nodes(고도 포함)가 없으면 산 정상고도(fallbackHeight)로 폴백.
+ */
+function getPeakElevation(
+  path: Coordinate[],
+  nodes: UnifiedMountainNode[] | null | undefined,
+  fallbackHeight: number,
+): number {
+  const peak = path[path.length - 1];
+  if (!peak || !nodes || nodes.length === 0) return fallbackHeight;
+
+  let bestElev = fallbackHeight;
+  let bestDist = Infinity;
+  for (const node of nodes) {
+    if (node.lat == null || node.lng == null) continue;
+    const dLat = node.lat - peak.lat;
+    const dLng = node.lng - peak.lng;
+    const d = dLat * dLat + dLng * dLng; // 근사(최근접 비교용이라 제곱거리로 충분)
+    if (d < bestDist) {
+      bestDist = d;
+      const elev = Number(node.elev);
+      bestElev = Number.isFinite(elev) ? Math.round(elev) : fallbackHeight;
+    }
+  }
+  return bestElev;
+}
+
+function normalizeRecommendedCourse(
+  row: RecommendedCourseRow,
+  meta?: UnifiedMeta,
+  nodes?: UnifiedMountainNode[] | null,
+): MountainCourse {
+  const mountainId = getRecommendedMountainId(row);
+  const mountainName = getRecommendedMountainName(row);
+  const courseName = cleanText(
+    row.course_name,
+    `코스 ${getRecommendedCourseId(row)}`,
+  );
+  const distKm = getRecommendedDistanceKm(row);
+  const totalMin = getRecommendedDurationMinutes(row);
+  const difficulty = courseDifficultyToLevel(null);
+  const path = getRecommendedPath(row);
+  // 정상 노드 고도 = 코스 끝점(정상)에 가장 가까운 노드의 고도 (없으면 산 정상고도)
+  const peakElev = getPeakElevation(path, nodes, meta?.height ?? 0);
+
+  return {
+    id: getRecommendedCourseId(row),
+    mountainId,
+    title: courseName,
+    // 설명 = unified_mountain_paths.description (없으면 기본 문구)
+    desc:
+      meta?.description ||
+      `${mountainName} ${courseName}. 거리 ${distKm.toFixed(1)}km.`,
+    img: meta?.img || DEFAULT_COURSE_IMAGE,
+    tags: [
+      `#${difficulty === "하" ? "쉬움" : difficulty === "중" ? "보통" : "어려움"}`,
+      distKm > 0 ? `#${distKm.toFixed(1)}km` : null,
+      totalMin > 0 ? `#${formatMinutes(totalMin)}` : null,
+    ].filter(Boolean) as string[],
+    distance: formatDistanceKm(distKm),
+    time: formatMinutes(totalMin),
+    difficulty,
+    elevation: peakElev > 0 ? `${peakElev}m` : "정보 없음",
+    // 위치 = unified_mountain_paths.region (없으면 산 입구)
+    startPoint: meta?.region || `${mountainName} 입구`,
+    highlights: [mountainName, courseName],
+    elevationProfile: path.length > 0 ? path.slice(0, 10).map(() => 0) : [],
+    ...(path.length > 0 ? { path } : {}),
+  } as MountainCourse;
+}
+
+function buildMountainsFromRecommendedCourses(
+  rows: RecommendedCourseRow[],
+): Mountain[] {
+  const seen = new Map<string, Mountain>();
+  rows.forEach((row) => {
+    const name = getRecommendedMountainName(row);
+    const id = getRecommendedMountainId(row);
+    if (!name || seen.has(id)) return;
+    const meta = SEOUL_MOUNTAIN_META[name];
+    seen.set(id, {
+      id,
+      name,
+      region: meta?.region ?? "서울",
+      altitude: toDisplayAltitude(meta?.altitude),
+      description: meta?.description ?? `${name} 등산 코스`,
+      img: meta?.img ?? DEFAULT_MOUNTAIN_IMAGE,
+      courseCount: 0,
+    });
+  });
+  return Array.from(seen.values());
+}
+
 function normalizeRailwayCourse(
   row: SeoulMountainPathRow,
   mountainId: string,
@@ -989,11 +1324,8 @@ export const apiService = {
       calories: null,
       steps: null,
     };
-    const enrichedPayload: Record<string, unknown> = {
-      ...basePayload,
-      course_id: record.courseId ?? null,
-      course_name: record.courseName ?? null,
-    };
+    // 주의: hiking_records 테이블에 course_id/course_name 컬럼이 없어
+    // 해당 필드를 보내면 백엔드가 500을 반환하므로 basePayload만 전송한다.
 
     async function postRecord(payload: Record<string, unknown>) {
       const response = await fetch(endpoint, {
@@ -1019,15 +1351,7 @@ export const apiService = {
     }
 
     try {
-      try {
-        return await postRecord(enrichedPayload);
-      } catch (error) {
-        console.warn(
-          "[API] Retrying active hiking record start with base schema:",
-          error,
-        );
-        return await postRecord(basePayload);
-      }
+      return await postRecord(basePayload);
     } catch (error) {
       console.error("[API] Error in startHikingRecord:", error);
       throw error;
@@ -1496,63 +1820,66 @@ export const apiService = {
   },
 
   /**
-   * 모든 산 목록을 가져옵니다.
+   * 산 목록을 unified_mountain_paths 테이블에서 가져옵니다.
+   * 코스 수는 recommended_courses_v2와 mountain_name(키)으로 엮어 계산하고,
+   * 코스가 1개 이상인 산만 노출합니다.
    */
   async getMountains(): Promise<Mountain[]> {
-    const url = `${DATA_API_BASE_URL}/data/unified_mountain_paths`;
-    console.log(`[API] Fetching mountains from Railway: ${url}`);
+    console.log("[API] Fetching mountains from unified_mountain_paths");
     try {
-      if (cachedMountains) return cachedMountains;
+      if (cachedRecommendedMountains) return cachedRecommendedMountains;
 
-      const [rows, courseCounts] = await Promise.all([
-        fetchDataRows<UnifiedMountainPath>("unified_mountain_paths", {
+      // 1. recommended_courses_v2 → 산 이름별 코스 수 (join 키 = mountain_name)
+      const courseRows = (await getRecommendedCourseRows()).filter(
+        (row) => getRecommendedCourseId(row) && getRecommendedMountainName(row),
+      );
+      const countByName = new Map<string, number>();
+      courseRows.forEach((row) => {
+        const name = getRecommendedMountainName(row);
+        countByName.set(name, (countByName.get(name) ?? 0) + 1);
+      });
+
+      // 2. unified_mountain_paths → 산 목록/메타데이터 (nodes/courses 제외해 경량 조회)
+      const unifiedRows = await fetchDataRows<UnifiedMountainPath>(
+        "unified_mountain_paths",
+        {
           select: "id,mountain_name,region,height,description,image_url",
           limit: "1000",
-        }),
-        getCourseCountByMountain(),
-      ]);
+        },
+      );
 
-      const mountainsByName = new Map<string, Mountain>();
-
-      MOUNTAINS.forEach((mountain) => {
-        const railwayCourseCount = courseCounts.get(mountain.name);
-        if (railwayCourseCount === undefined) return;
-
-        mountainsByName.set(mountain.name, {
-          ...mountain,
-          courseCount: toDisplayCourseCount(railwayCourseCount),
-        });
-      });
-
-      rows.forEach((row) => {
+      // 3. mountain_name으로 엮어 Mountain[] 구성 (코스 ≥1개인 산만)
+      const seen = new Set<string>();
+      const mountains: Mountain[] = [];
+      unifiedRows.forEach((row) => {
         const name = normalizeMountainKey(row.mountain_name);
-        if (!name) return;
-
-        const courseCount = courseCounts.get(name) ?? 0;
-        if (courseCount <= 0) return;
-
-        const existingMountain = mountainsByName.get(name);
-        if (existingMountain) {
-          mountainsByName.set(name, {
-            ...existingMountain,
-            img: cleanImageUrl(row.image_url, existingMountain.img),
-          });
-          return;
-        }
-
-        mountainsByName.set(
-          name,
-          buildMountainFromRailwayRow(row, courseCount),
-        );
+        if (!name || seen.has(name)) return;
+        const courseCount = countByName.get(name) ?? 0;
+        if (courseCount <= 0) return; // 코스 없는 산은 제외
+        seen.add(name);
+        mountains.push(buildMountainFromRailwayRow(row, courseCount));
       });
 
-      cachedMountains = Array.from(mountainsByName.values());
-
-      if (cachedMountains.length === 0) {
-        throw new Error("Railway에서 표시 가능한 산 데이터를 찾지 못했습니다.");
+      // 4. unified에 없지만 코스는 있는 산도 폴백으로 포함 (이름 키 누락 방지)
+      if (mountains.length === 0) {
+        console.warn(
+          "[API] unified_mountain_paths 비어있음 → recommended_courses_v2 기반 폴백",
+        );
+        const countById = new Map<string, number>();
+        courseRows.forEach((row) => {
+          const id = getRecommendedMountainId(row);
+          countById.set(id, (countById.get(id) ?? 0) + 1);
+        });
+        const fb = buildMountainsFromRecommendedCourses(courseRows);
+        fb.forEach((m) => (m.courseCount = countById.get(m.id) ?? 0));
+        mountains.push(...fb.filter((m) => m.courseCount > 0));
       }
 
-      return cachedMountains;
+      cachedRecommendedMountains = mountains.sort(
+        (a, b) => b.courseCount - a.courseCount,
+      );
+
+      return cachedRecommendedMountains;
     } catch (error) {
       console.error("[API] Error in getMountains:", error);
       throw error;
@@ -1582,38 +1909,60 @@ export const apiService = {
   },
 
   /**
-   * 특정 산의 코스 목록을 가져옵니다.
+   * recommended_courses 테이블에서 특정 산의 코스 목록을 가져옵니다.
    */
   async getCourses(mountainId: string): Promise<MountainCourse[]> {
     console.log(
-      `[API] Fetching courses for mountain ${mountainId} from Railway data`,
+      `[API] Fetching courses for ${mountainId} from recommended_courses`,
     );
     try {
       const cached = courseCache.get(mountainId);
       if (cached) return cached;
 
-      const mountainName = getMountainNameFromId(mountainId);
-      const rows = await fetchFilteredDataRows<SeoulMountainPathRow>(
-        "seoul_mountain_paths",
-        { mountain_name: mountainName },
-        {
-          select:
-            "id,mountain_name,difficulty,uptime,downtime,length_km,path_coords,elevations,slopes,avg_slope,info_id",
-          limit: String(COURSE_DISPLAY_LIMIT),
-        },
+      const [allRows, metaMap] = await Promise.all([
+        getRecommendedCourseRows(),
+        getUnifiedMetaMap(),
+      ]);
+      const rows = allRows.filter(
+        (row) =>
+          getRecommendedMountainId(row) === mountainId ||
+          getRecommendedMountainName(row) === mountainId,
       );
 
-      const railwayCourses = rows.map((row) =>
-        normalizeRailwayCourse(row, mountainId),
-      );
+      // 해당 산의 노드(고도 포함)를 가져와 코스별 정상 고도 산출에 사용
+      const mountainName = rows[0]
+        ? getRecommendedMountainName(rows[0])
+        : mountainId;
+      const unified = await this.getUnifiedMountainPath(mountainName);
+      const nodes = unified?.nodes ?? null;
 
-      if (railwayCourses.length > 0) {
-        courseCache.set(mountainId, railwayCourses);
-        return railwayCourses;
-      }
+      const deduped = new Map<string, RecommendedCourseRow>();
+      rows.forEach((row) => {
+        const key = getRecommendedCourseId(row);
+        const prev = deduped.get(key);
+        if (
+          !prev ||
+          getRecommendedDistanceKm(row) > getRecommendedDistanceKm(prev)
+        ) {
+          deduped.set(key, row);
+        }
+      });
 
-      courseCache.set(mountainId, []);
-      return [];
+      const courses = Array.from(deduped.values())
+        .sort(
+          (a, b) => getRecommendedDistanceKm(b) - getRecommendedDistanceKm(a),
+        )
+        .slice(0, COURSE_DISPLAY_LIMIT)
+        .map((row) =>
+          normalizeRecommendedCourse(
+            row,
+            metaMap.get(getRecommendedMountainName(row)),
+            nodes,
+          ),
+        );
+
+      courseCache.set(mountainId, courses);
+      return courses;
     } catch (error) {
       console.error("[API] Error in getCourses:", error);
       throw error;
@@ -1621,24 +1970,54 @@ export const apiService = {
   },
 
   /**
-   * 코스 ID를 기반으로 실제 경로와 ETA를 가져옵니다. (알고리즘 연동)
+   * 코스 ID를 기반으로 실제 경로와 ETA를 가져옵니다. (recommended_courses 기반)
    */
   async getCourseRoute(courseId: string): Promise<PathResult> {
-    console.log(`[API] Fetching course route ${courseId} from Railway data`);
+    console.log(
+      `[API] Fetching course route ${courseId} from recommended_courses`,
+    );
     try {
       const cached = courseRouteCache.get(courseId);
       if (cached) return cached;
 
-      const row = await fetchDataRow<SeoulMountainPathRow>(
-        "seoul_mountain_paths",
-        courseId,
-      );
+      const rows = await getRecommendedCourseRows();
+      const row =
+        rows.find((item) => getRecommendedCourseId(item) === courseId) ?? null;
 
       if (!row) {
         throw new Error(`코스 경로를 찾지 못했습니다: ${courseId}`);
       }
 
-      const route = normalizeRailwayRoute(row);
+      const path = getRecommendedPath(row);
+      const distKm = getRecommendedDistanceKm(row);
+      const totalMin = getRecommendedDurationMinutes(row);
+      const durationSec = totalMin * 60;
+      const distanceM = Math.round(distKm * 1000);
+      const mountainName = getRecommendedMountainName(row);
+      const courseName = cleanText(row.course_name, `코스 ${courseId}`);
+
+      const route: PathResult = {
+        route_id: courseId,
+        path,
+        path_names: path.map((_, index) => `${mountainName} ${index + 1}`),
+        summary: {
+          distance_m: distanceM,
+          duration_sec: durationSec,
+          ascent_m: 0,
+          descent_m: 0,
+          total_distance_m: distanceM,
+          total_hours: Math.floor(durationSec / 3600),
+          total_minutes: Math.floor((durationSec % 3600) / 60),
+          total_seconds: durationSec % 60,
+          eta: formatEta(durationSec),
+        },
+        start_node: path[0] ?? null,
+        end_node: path[path.length - 1] ?? null,
+        total_hours: Math.floor(durationSec / 3600),
+        total_minutes: Math.floor((durationSec % 3600) / 60),
+        total_seconds: durationSec % 60,
+        course_name: courseName,
+      } as PathResult;
       courseRouteCache.set(courseId, route);
       return route;
     } catch (error) {
