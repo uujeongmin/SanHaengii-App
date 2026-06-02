@@ -216,6 +216,7 @@ export default function HomeScreen() {
   const watchPulseColor = getWatchPulseColor(watchStatus, watchSyncEnabled);
   const heartRateText = formatWatchNumber(watchData?.heartRate, " bpm");
   const spo2Text = formatWatchNumber(watchData?.spo2, " %");
+  const stepsText = formatWatchNumber(watchData?.steps, " 보");
   const measuredAtText = formatWatchMeasuredAt(watchData?.measuredAt);
 
   function handleStartCourse(course: MountainCourse) {
@@ -340,6 +341,16 @@ export default function HomeScreen() {
               </Text>
               <Text style={[styles.metricLabel, { color: "#2563eb" }]}>
                 {watchSyncEnabled ? "실시간 산소포화도" : "산소포화도 대기"}
+              </Text>
+            </View>
+            <View style={[styles.metricChip, { backgroundColor: "#f0fdf4" }]}>
+              <Ionicons name="footsteps" size={22} color="#16a34a" />
+              <Text style={styles.metricValue}>
+                {stepsText.replace(" 보", "")}
+                <Text style={styles.metricUnit}> 보</Text>
+              </Text>
+              <Text style={[styles.metricLabel, { color: "#15803d" }]}>
+                {watchSyncEnabled ? "실시간 걸음수" : "걸음수 대기"}
               </Text>
             </View>
           </View>

@@ -17,10 +17,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../contexts/AuthContext";
+import { useWatchHealth } from "../contexts/WatchHealthContext";
 import { apiService, DEV_TEST_TOKEN } from "../data/api";
 
 export default function SafetyScreen() {
   const { token, user, completeProfile } = useAuth();
+  // 생체데이터 모니터링 = 홈화면 스마트워치 동기화 on/off (공유 상태)
+  const { isEnabled: isMonitoring, setEnabled: setMonitoring } =
+    useWatchHealth();
 
   /* ── 배경 글로우 펄스 ── */
   const bgPulse = useRef(new Animated.Value(1)).current;
@@ -31,7 +35,6 @@ export default function SafetyScreen() {
   const [isAnomaly, setIsAnomaly] = useState(false);
   const [anomalyMessage, setAnomalyMessage] = useState("정상 상태");
   const [lastHealthData, setLastHealthData] = useState<any>(null);
-  const [isMonitoring, setIsMonitoring] = useState(false);
   const [isReporting, setIsReporting] = useState(false);
 
   /* ── 보호자 연락처 수정 모달 상태 ── */
@@ -303,21 +306,8 @@ export default function SafetyScreen() {
     }
   };
 
-  useEffect(() => {
-    let interval: any;
-    if (isMonitoring) {
-      interval = setInterval(async () => {
-        await uploadDummyHealthData();
-        fetchAndCheckHealthData();
-      }, 5000);
-
-      Alert.alert(
-        "실시간 모니터링 시작",
-        "스마트워치로 실시간 데이터를 분석합니다.",
-      );
-    }
-    return () => clearInterval(interval);
-  }, [isMonitoring, authToken]);
+  // 생체데이터 모니터링/이상감지는 WatchHealthContext(홈 동기화)가 담당합니다.
+  // SafetyScreen은 동일한 on/off 상태(isMonitoring)만 공유해 표시합니다.
 
   useEffect(() => {
     Animated.loop(
@@ -409,7 +399,7 @@ export default function SafetyScreen() {
                 isMonitoring && { backgroundColor: "#4ade80" },
               ]}
               activeOpacity={0.7}
-              onPress={() => setIsMonitoring(!isMonitoring)}
+              onPress={() => setMonitoring(!isMonitoring)}
             >
               <Ionicons
                 name={
@@ -511,54 +501,6 @@ export default function SafetyScreen() {
               버튼을 5초 동안 누르면 119 및 지정 보호자에게 위치가 전송됩니다.
             </Text>
           </TouchableOpacity>
-
-          {lastHealthData && (
-            <View
-              style={[
-                styles.card,
-                { backgroundColor: "#fdf4ff", borderColor: "#f5d0fe" },
-              ]}
-            >
-              <View style={styles.cardHeaderRow}>
-                <Text style={[styles.cardTitle, { color: "#86198f" }]}>
-                  실시간 워치 데이터
-                </Text>
-                <Ionicons name="watch-outline" size={20} color="#86198f" />
-              </View>
-              <View style={styles.dataGrid}>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>심박수</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.heart_rate ?? 0} bpm
-                  </Text>
-                </View>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>걸음수</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.steps ?? 0} 보
-                  </Text>
-                </View>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>산소포화도</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.spo2 ?? 0}%
-                  </Text>
-                </View>
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>체온</Text>
-                  <Text style={styles.dataValue}>
-                    {lastHealthData.body_temp ?? 0}°C
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.dataTime}>
-                수신 시각:{" "}
-                {lastHealthData.measured_at
-                  ? new Date(lastHealthData.measured_at).toLocaleString()
-                  : "N/A"}
-              </Text>
-            </View>
-          )}
 
           <View style={styles.card}>
             <View style={styles.cardHeaderRow}>
