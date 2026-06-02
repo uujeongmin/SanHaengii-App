@@ -9,6 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { Platform } from "react-native";
 
 import {
   apiService,
@@ -51,7 +52,9 @@ interface WatchHealthContextValue {
   /** LiveMapScreen이 DB에 "anomaly" 신호를 PUT한 뒤 호출 */
   markWatchNotified: () => void;
   /** [DEV] 특정 임계값을 가진 가짜 이상징후를 즉시 트리거 */
-  triggerTestAnomaly: (type: "hr_high" | "hr_low" | "spo2" | "temp_high") => void;
+  triggerTestAnomaly: (
+    type: "hr_high" | "hr_low" | "spo2" | "temp_high",
+  ) => void;
 }
 
 const WatchHealthContext = createContext<WatchHealthContextValue | undefined>(
@@ -216,7 +219,10 @@ export function WatchHealthProvider({ children }: { children: ReactNode }) {
           const pos =
             (await Location.getLastKnownPositionAsync({})) ??
             (await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
+              accuracy:
+                Platform.OS === "android"
+                  ? Location.Accuracy.High
+                  : Location.Accuracy.Highest,
             }));
           if (pos) {
             location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -232,7 +238,9 @@ export function WatchHealthProvider({ children }: { children: ReactNode }) {
       // 2. 구조 요청 전송
       const emergencyUserId = user?.id && user.id > 0 ? user.id : 0;
       if (emergencyUserId === 0) {
-        console.warn("[WatchHealth] SOS: 로그인된 user.id 없음 — 게스트로 신고");
+        console.warn(
+          "[WatchHealth] SOS: 로그인된 user.id 없음 — 게스트로 신고",
+        );
       }
       const payload = {
         userId: emergencyUserId,

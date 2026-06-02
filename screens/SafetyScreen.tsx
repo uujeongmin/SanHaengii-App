@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -6,6 +7,7 @@ import {
   Easing,
   Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -146,6 +148,28 @@ export default function SafetyScreen() {
     clearEmergencyTimer();
     const { showSuccessAlert = true } = options;
 
+    // 1. 현위치 시도 (실패해도 기본 좌표로 진행)
+    let location = { lat: 37.557999, lng: 127.007993 };
+    try {
+      const { status: permStatus } =
+        await Location.requestForegroundPermissionsAsync();
+      if (permStatus === "granted") {
+        const pos =
+          (await Location.getLastKnownPositionAsync({})) ??
+          (await Location.getCurrentPositionAsync({
+            accuracy:
+              Platform.OS === "android"
+                ? Location.Accuracy.High
+                : Location.Accuracy.Highest,
+          }));
+        if (pos) {
+          location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        }
+      }
+    } catch (locError) {
+      console.log("[Safety] SOS 위치 취득 실패, 기본 좌표 사용:", locError);
+    }
+
     const emergencyPayload = {
       userId: emergencyUserId,
       eventType: reason.includes("수동")
@@ -154,10 +178,7 @@ export default function SafetyScreen() {
           ? "낙상_감지"
           : "이상_징후",
       timestamp: new Date().toISOString(),
-      location: {
-        lat: 37.557999,
-        lng: 127.007993,
-      },
+      location,
     };
 
     try {

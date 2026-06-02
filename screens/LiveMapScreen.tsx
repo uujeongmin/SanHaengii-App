@@ -52,6 +52,12 @@ type LiveMapRouteProp = RouteProp<RootTabParamList, "내비게이션">;
 const UNIFIED_PATH_CHUNK_SIZE = 1200;
 const UNIFIED_PATH_CHUNK_DELAY_MS = 120;
 const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
+const GPS_TIMEOUT_MS = 10000;
+const LAST_KNOWN_MAX_AGE_MS = 30000;
+const GPS_FOLLOW_ZOOM = 16;
+// GPS를 아직 못 잡았을 때 지도 최초 렌더에만 쓰는 viewport 좌표.
+// 절대 "현위치" 값으로 사용하지 않습니다(현위치는 실제 GPS만 반영).
+const INITIAL_CAMERA = { latitude: 36.5, longitude: 127.8 };
 
 const markerBubbleStyle = {
   width: 36,
@@ -67,6 +73,8 @@ const MARKER_ICON_SETS = {
   ionicons: Ionicons,
   material: MaterialCommunityIcons,
 } as const;
+
+type DeviceLocation = Location.LocationObject;
 
 /* ── 지도 마커 아이콘 (원형 버블) ── */
 function MapMarkerIcon({
@@ -218,6 +226,46 @@ interface MapCoord {
   longitude: number;
 }
 
+/* ── 두 좌표 간 거리(km) — Haversine ── */
+function haversineKm(a: MapCoord, b: MapCoord): number {
+  const R = 6371; // 지구 반경 km
+  const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
+  const dLng = ((b.longitude - a.longitude) * Math.PI) / 180;
+  const lat1 = (a.latitude * Math.PI) / 180;
+  const lat2 = (b.latitude * Math.PI) / 180;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/**
+ * 현위치에서 경로 최근접 지점을 찾아, 그 지점부터 도착점까지의 남은 거리(km)를 계산.
+ * = (현위치 → 최근접 노드 거리) + (최근접 노드 → 끝까지 구간 거리 합)
+ */
+function remainingDistanceAlongPath(
+  current: MapCoord,
+  path: MapCoord[],
+): number | null {
+  if (!path || path.length === 0) return null;
+
+  let nearestIdx = 0;
+  let nearestDist = Infinity;
+  for (let i = 0; i < path.length; i++) {
+    const d = haversineKm(current, path[i]);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestIdx = i;
+    }
+  }
+
+  let remaining = nearestDist; // 현위치 → 최근접 노드
+  for (let k = nearestIdx; k < path.length - 1; k++) {
+    remaining += haversineKm(path[k], path[k + 1]);
+  }
+  return remaining;
+}
+
 export default function LiveMapScreen() {
   const navigation = useNavigation<LiveMapNavProp>();
   const route = useRoute<LiveMapRouteProp>();
@@ -261,10 +309,9 @@ export default function LiveMapScreen() {
   const [mapRegion, setMapRegion] = useState<Region | undefined>(undefined);
   const [startPoint, setStartPoint] = useState<MapCoord | null>(null);
   const [endPoint, setEndPoint] = useState<MapCoord | null>(null);
-  const [currentLocation, setCurrentLocation] = useState<MapCoord>({
-    latitude: 37.5665,
-    longitude: 126.978,
-  });
+  // 현위치는 실제 GPS를 잡기 전까지 null (기본 좌표를 현위치로 쓰지 않음)
+  const [currentLocation, setCurrentLocation] = useState<MapCoord | null>(null);
+  const [hasGpsLocation, setHasGpsLocation] = useState(false);
 
   // SNS 인기 조망점(포토스팟) 상태
   const [photoSpots, setPhotoSpots] = useState<PhotoSpot[]>([]);
@@ -292,6 +339,10 @@ export default function LiveMapScreen() {
   const prevStepsRef = useRef<{ steps: number; time: number } | null>(null);
   // 워치 기반 페이스를 한 번이라도 산출했는지 (이후 시뮬레이션 페이스 중단)
   const hasWatchPaceRef = useRef(false);
+  // GPS 기반 남은거리를 산출 중인지 (true면 시뮬레이션 거리 차감 중단)
+  const hasGpsRemainingRef = useRef(false);
+  // 최신 pace를 GPS effect에서 참조 (deps 추가 없이)
+  const currentPaceRef = useRef(0);
 
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
@@ -306,72 +357,123 @@ export default function LiveMapScreen() {
   const mapRef = useRef<NaverMapViewRef>(null);
   // 사용자가 드래그한 지도 카메라 위치 기억 (줌/현위치 버튼 기준)
   const mapCamera = useRef<MapCoord | null>(null);
+  const hasCenteredOnGpsRef = useRef(false);
+  const hasGpsLocationRef = useRef(false);
 
-  const [zoom, setZoom] = useState(15);
+  // 줌 레벨은 ref로만 추적 (state로 두면 onCameraChanged → setState → 제어형
+  // camera prop 재적용 → 카메라 애니메이션 재실행으로 무한 진동(흔들림)이 발생함)
+  const zoomRef = useRef(15);
 
-  const handleZoomIn = () => {
-    setZoom((z) => {
-      const newZoom = Math.min(z + 1, 21);
-      const target = mapCamera.current || currentLocation;
-      if (target) {
-        mapRef.current?.animateCameraTo({
-          latitude: target.latitude,
-          longitude: target.longitude,
-          zoom: newZoom,
-        });
-      }
-      return newZoom;
+  const applyDeviceLocation = (
+    location: DeviceLocation,
+    options: { followCamera?: boolean } = {},
+  ) => {
+    const nextLocation = {
+      latitude: location.coords.latitude,
+      longitude: location.coords.longitude,
+    };
+
+    setCurrentLocation(nextLocation);
+    setHasGpsLocation(true);
+    hasGpsLocationRef.current = true;
+
+    if (options.followCamera) {
+      setMapRegion(undefined);
+      mapCamera.current = nextLocation;
+      zoomRef.current = GPS_FOLLOW_ZOOM;
+      mapRef.current?.animateCameraTo({
+        latitude: nextLocation.latitude,
+        longitude: nextLocation.longitude,
+        zoom: GPS_FOLLOW_ZOOM,
+        duration: 600,
+      });
+    }
+  };
+
+  const ensureLocationReady = async () => {
+    const enabled = await Location.hasServicesEnabledAsync();
+    if (!enabled) {
+      throw new Error("LOCATION_SERVICES_DISABLED");
+    }
+
+    const currentPermission = await Location.getForegroundPermissionsAsync();
+    const permission =
+      currentPermission.status === "granted"
+        ? currentPermission
+        : await Location.requestForegroundPermissionsAsync();
+
+    if (permission.status !== "granted") {
+      throw new Error("LOCATION_PERMISSION_DENIED");
+    }
+  };
+
+  const getCurrentDeviceLocation = async () => {
+    await ensureLocationReady();
+
+    return Promise.race<DeviceLocation>([
+      Location.getCurrentPositionAsync({
+        accuracy:
+          Platform.OS === "android"
+            ? Location.Accuracy.Highest
+            : Location.Accuracy.BestForNavigation,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("GPS_TIMEOUT")), GPS_TIMEOUT_MS),
+      ),
+    ]);
+  };
+
+  const getFreshLastKnownLocation = async () =>
+    Location.getLastKnownPositionAsync({
+      maxAge: LAST_KNOWN_MAX_AGE_MS,
+      requiredAccuracy: 100,
+    });
+
+  // 현재 카메라 중심을 유지한 채 줌만 변경 (명령형 이동으로 일원화)
+  const animateZoomTo = (newZoom: number) => {
+    zoomRef.current = newZoom;
+    const target = mapCamera.current ?? currentLocation ?? INITIAL_CAMERA;
+    // 제어형 region이 남아 있으면 명령형 이동과 충돌하므로 해제
+    setMapRegion((prev) => (prev ? undefined : prev));
+    mapRef.current?.animateCameraTo({
+      latitude: target.latitude,
+      longitude: target.longitude,
+      zoom: newZoom,
+      duration: 250,
     });
   };
-  const handleZoomOut = () => {
-    setZoom((z) => {
-      const newZoom = Math.max(z - 1, 5);
-      const target = mapCamera.current || currentLocation;
-      if (target) {
-        mapRef.current?.animateCameraTo({
-          latitude: target.latitude,
-          longitude: target.longitude,
-          zoom: newZoom,
-        });
-      }
-      return newZoom;
-    });
-  };
+  const handleZoomIn = () => animateZoomTo(Math.min(zoomRef.current + 1, 21));
+  const handleZoomOut = () => animateZoomTo(Math.max(zoomRef.current - 1, 5));
+  /**
+   * GPS 현위치 즉시 취득 (버튼 탭 시 호출).
+   * 에뮬레이터 mock location과 실기기 GPS 모두 Expo Location이 반환하는 기기 위치를 사용합니다.
+   */
   const handleRescanGPS = async () => {
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
+      const location = await getCurrentDeviceLocation();
+      applyDeviceLocation(location, { followCamera: true });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "";
+      if (message === "LOCATION_SERVICES_DISABLED") {
+        Alert.alert("GPS 비활성화", "기기 설정에서 위치 서비스를 켜주세요.");
+        return;
+      }
+
+      if (message === "LOCATION_PERMISSION_DENIED") {
         Alert.alert("권한 필요", "위치 정보 접근 권한이 필요합니다.");
         return;
       }
 
-      let location = await Location.getLastKnownPositionAsync({});
-      if (!location) {
-        location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+      const last = await getFreshLastKnownLocation();
+      if (last) {
+        applyDeviceLocation(last, { followCamera: true });
+        return;
       }
 
-      if (location) {
-        const newLoc = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-        };
-        setCurrentLocation(newLoc);
-
-        if (mapRef.current) {
-          mapRef.current.animateCameraTo({
-            latitude: newLoc.latitude,
-            longitude: newLoc.longitude,
-            zoom: 16,
-          });
-        }
-      }
-    } catch (e) {
-      console.error("[LiveMap] Error rescanning GPS:", e);
+      console.error("[LiveMap] GPS rescan error:", e);
       Alert.alert(
         "위치 오류",
-        "현재 위치를 가져올 수 없습니다. 에뮬레이터 설정(Location)을 확인해주세요.",
+        "현재 위치를 가져오지 못했습니다. 에뮬레이터 위치 설정 또는 휴대폰 GPS 상태를 확인해주세요.",
       );
     }
   };
@@ -401,6 +503,7 @@ export default function LiveMapScreen() {
 
       // 2. 카메라 이동 및 타일 캐싱 유도
       if (mapRef.current) {
+        zoomRef.current = 14;
         mapRef.current.animateCameraTo({
           latitude: centerLat,
           longitude: centerLng,
@@ -454,37 +557,60 @@ export default function LiveMapScreen() {
     setIsMapSaved(false);
   }, [courseId]);
 
-  // GPS 실시간 추적
+  // GPS 실시간 추적: Android 에뮬레이터 mock location 또는 실기기 GPS를 그대로 반영합니다.
   useEffect(() => {
-    handleRescanGPS();
-
     let locationSubscription: Location.LocationSubscription | null = null;
+    let cancelled = false;
+
     (async () => {
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") return;
-        locationSubscription = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.Balanced,
-            timeInterval: 5000,
-            distanceInterval: 10,
-          },
-          (loc) => {
-            setCurrentLocation({
-              latitude: loc.coords.latitude,
-              longitude: loc.coords.longitude,
-            });
-          },
-        );
+        await ensureLocationReady();
+        if (cancelled) return;
+
+        const last = await getFreshLastKnownLocation();
+        if (last && !cancelled) {
+          applyDeviceLocation(last, {
+            followCamera: !hasCenteredOnGpsRef.current,
+          });
+          hasCenteredOnGpsRef.current = true;
+        }
+
+        const subscribe = async (acc: Location.Accuracy) =>
+          Location.watchPositionAsync(
+            { accuracy: acc, timeInterval: 2000, distanceInterval: 1 },
+            (loc) => {
+              if (!cancelled) {
+                applyDeviceLocation(loc, {
+                  followCamera: !hasCenteredOnGpsRef.current,
+                });
+                hasCenteredOnGpsRef.current = true;
+              }
+            },
+          );
+
+        const current = await getCurrentDeviceLocation();
+        if (!cancelled) {
+          applyDeviceLocation(current, {
+            followCamera: !hasCenteredOnGpsRef.current,
+          });
+          hasCenteredOnGpsRef.current = true;
+        }
+
+        try {
+          locationSubscription = await subscribe(Location.Accuracy.Highest);
+        } catch {
+          if (!cancelled) {
+            locationSubscription = await subscribe(Location.Accuracy.High);
+          }
+        }
       } catch (err) {
-        console.log("[LiveMap] watchPosition error:", err);
+        if (!cancelled) console.log("[LiveMap] GPS setup error:", err);
       }
     })();
 
     return () => {
-      if (locationSubscription) {
-        locationSubscription.remove();
-      }
+      cancelled = true;
+      locationSubscription?.remove();
     };
   }, []);
 
@@ -851,7 +977,6 @@ export default function LiveMapScreen() {
         setRoutePath(mappedPath);
         setStartPoint(mappedPath[0]);
         setEndPoint(mappedPath[mappedPath.length - 1]);
-        setCurrentLocation(mappedPath[0]); // 시뮬레이션 시작 위치
       }
     } catch (error) {
       console.error("[LiveMap] Failed to fetch real route data:", error);
@@ -915,13 +1040,8 @@ export default function LiveMapScreen() {
       });
 
       const boundsRegion = createRegionFromNodes(result.nodes);
-      if (boundsRegion) {
+      if (boundsRegion && !hasGpsLocationRef.current) {
         setMapRegion(boundsRegion);
-      }
-
-      if (pathParts.length > 0 && routePath.length === 0) {
-        const firstCoord = pathParts[0].coords[0];
-        setCurrentLocation(firstCoord);
       }
 
       setUnifiedLoading(false);
@@ -1017,7 +1137,6 @@ export default function LiveMapScreen() {
   useEffect(() => {
     if (!dynamicAnalysis || routePath.length === 0) return;
 
-    let pathIndex = 0;
     const interval = setInterval(() => {
       if (isPaused) return;
 
@@ -1041,26 +1160,23 @@ export default function LiveMapScreen() {
         return Math.round(Math.min(30, Math.max(-10, next)));
       });
 
-      // 2. 거리 및 ETA 실시간 계산 (현위치로부터의 이동 반영)
-      setRemainingDist((prevDist) => {
-        const travelDist = (currentPace / 3600) * 10;
-        const nextDist = Math.max(0, prevDist - travelDist);
+      // 2. 거리 및 ETA 실시간 계산
+      //    GPS로 남은거리를 산출 중이면(hasGpsRemainingRef) 시뮬레이션 차감은 건너뛴다.
+      if (!hasGpsRemainingRef.current) {
+        setRemainingDist((prevDist) => {
+          const travelDist = (currentPace / 3600) * 10;
+          const nextDist = Math.max(0, prevDist - travelDist);
 
-        const slopeAdjustment = 1 + (Math.abs(currentSlope) / 10) * 0.5;
-        const calculatedEta = Math.round(
-          (nextDist / (currentPace / slopeAdjustment)) * 60,
-        );
+          const slopeAdjustment = 1 + (Math.abs(currentSlope) / 10) * 0.5;
+          const calculatedEta = Math.round(
+            (nextDist / (currentPace / slopeAdjustment)) * 60,
+          );
 
-        setDynamicEta(nextDist > 0 ? Math.max(1, calculatedEta) : 0);
+          setDynamicEta(nextDist > 0 ? Math.max(1, calculatedEta) : 0);
 
-        // 지도 상의 현재 위치 업데이트 (시뮬레이션)
-        if (pathIndex < routePath.length - 1) {
-          pathIndex++;
-          setCurrentLocation(routePath[pathIndex]);
-        }
-
-        return nextDist;
-      });
+          return nextDist;
+        });
+      }
     }, 3000);
 
     return () => clearInterval(interval);
@@ -1072,6 +1188,37 @@ export default function LiveMapScreen() {
     isPaused,
     isWatchHrLive,
   ]);
+
+  /* ── 최신 pace를 ref에 동기화 (GPS effect에서 deps 없이 참조) ── */
+  useEffect(() => {
+    currentPaceRef.current = currentPace;
+  }, [currentPace]);
+
+  /* ── GPS 기반 남은거리/ETA 재계산 ──
+   * 현위치가 갱신될 때마다 경로 최근접 지점 기준 남은거리를 구하고,
+   * pace(워치 걸음수 또는 시뮬)로 남은시간을 산출. 경로/현위치가 있어야 동작. */
+  useEffect(() => {
+    if (isPaused) return;
+    if (!currentLocation || routePath.length === 0) {
+      hasGpsRemainingRef.current = false; // GPS/경로 없으면 시뮬레이션이 담당
+      return;
+    }
+
+    const remainKm = remainingDistanceAlongPath(currentLocation, routePath);
+    if (remainKm == null) {
+      hasGpsRemainingRef.current = false;
+      return;
+    }
+
+    hasGpsRemainingRef.current = true; // 이후 시뮬레이션 거리 차감 중단
+    setRemainingDist(remainKm);
+
+    // 남은시간 = 남은거리 / 속도. pace 없으면 기본 3km/h(백엔드와 동일 가정)
+    const paceKmh = currentPaceRef.current > 0.3 ? currentPaceRef.current : 3;
+    const slopeAdj = 1 + (Math.abs(currentSlope) / 10) * 0.5;
+    const etaMin = Math.round((remainKm / (paceKmh / slopeAdj)) * 60);
+    setDynamicEta(remainKm > 0.03 ? Math.max(1, etaMin) : 0);
+  }, [currentLocation, routePath, isPaused, currentSlope]);
 
   /* ── 워치 생체데이터를 현재 페이스/심박수에 반영 ── */
   useEffect(() => {
@@ -1258,16 +1405,10 @@ export default function LiveMapScreen() {
       <NaverMapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        camera={
-          mapRegion
-            ? undefined
-            : mapCamera.current
-              ? { ...mapCamera.current, zoom }
-              : { ...currentLocation, zoom }
-        }
+        initialCamera={{ ...INITIAL_CAMERA, zoom: zoomRef.current }}
         region={mapRegion}
         animationDuration={500}
-        mapPadding={{ top: 130, right: 20, bottom: 360, left: 20 }}
+        mapPadding={{ top: 130, right: 20, bottom: 90, left: 20 }}
         layerGroups={{
           BUILDING: true,
           TRAFFIC: false,
@@ -1280,12 +1421,14 @@ export default function LiveMapScreen() {
         isShowZoomControls={false}
         isShowLocationButton={false}
         onCameraChanged={(e: any) => {
+          // 카메라 상태를 ref에만 기록 (setState 금지 → 리렌더/제어형 prop 재적용
+          // 으로 인한 카메라 진동 방지)
           mapCamera.current = {
             latitude: e.latitude,
             longitude: e.longitude,
           };
-          if (e.reason !== 0) {
-            setZoom(e.zoom);
+          if (typeof e.zoom === "number") {
+            zoomRef.current = e.zoom;
           }
         }}
       >
@@ -1314,17 +1457,19 @@ export default function LiveMapScreen() {
           />
         )}
 
-        {/* 현재 위치 마커 */}
-        <NaverMapMarkerOverlay
-          latitude={currentLocation.latitude}
-          longitude={currentLocation.longitude}
-          width={36}
-          height={36}
-          caption={{ text: "현위치" }}
-          subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
-        >
-          <MapMarkerIcon name="navigate" color="#2563eb" />
-        </NaverMapMarkerOverlay>
+        {/* 현재 위치 마커 (실제 GPS를 잡았을 때만 표시) */}
+        {hasGpsLocation && currentLocation && (
+          <NaverMapMarkerOverlay
+            latitude={currentLocation.latitude}
+            longitude={currentLocation.longitude}
+            width={36}
+            height={36}
+            caption={{ text: "현위치" }}
+            subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
+          >
+            <MapMarkerIcon name="navigate" color="#2563eb" />
+          </NaverMapMarkerOverlay>
+        )}
 
         {/* 출발/도착 마커 */}
         {startPoint && (
