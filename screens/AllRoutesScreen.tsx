@@ -179,7 +179,7 @@ export default function AllRoutesScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.mountainName}>{mountain.name}</Text>
                     <Text style={styles.mountainRegion}>{mountain.region}</Text>
-                    <Text style={styles.mountainDesc} numberOfLines={1}>
+                    <Text style={styles.mountainDesc} numberOfLines={2}>
                       {mountain.description}
                     </Text>
                   </View>
@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   mountainRegion: { fontSize: 12, color: "#9ca3af", marginBottom: 4 },
-  mountainDesc: { fontSize: 13, color: "#6b7280" },
+  mountainDesc: { fontSize: 10, color: "#9ca3af" },
 
   arrowWrap: {
     width: 36,
