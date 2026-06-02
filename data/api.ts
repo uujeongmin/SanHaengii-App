@@ -40,8 +40,10 @@ const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const LEGACY_TRAIL_API_BASE_URL =
   process.env.EXPO_PUBLIC_TRAIL_API_BASE_URL ?? LOCAL_TRAIL_API_BASE_URL;
 
-// Flask relay 주소 (워치·모바일 credentials 동기화용)
-export const FLASK_RELAY_BASE_URL = LOCAL_TRAIL_API_BASE_URL;
+// 워치 credentials 동기화 relay 주소.
+// watch-credentials 엔드포인트가 Railway 백엔드에 배포돼 있어, 실기기에서도
+// 닿는 공개 HTTPS(AUTH_API_BASE_URL)를 사용한다. (기존 localhost:5001은 에뮬레이터 전용)
+export const FLASK_RELAY_BASE_URL = AUTH_API_BASE_URL;
 
 export const TRAIL_API_BASE_URL = DATA_API_BASE_URL;
 export const BASE_URL = DATA_API_BASE_URL;
