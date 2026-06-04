@@ -883,21 +883,32 @@ export default function LiveMapScreen() {
   };
 
   const handleStopNavigation = () => {
-    Alert.alert("산행 중단", "현재 산행을 완전히 종료할까요? (기록 저장)", [
+    Alert.alert(
+      "산행 중단",
+      "현재 산행을 기록으로 저장하지 않고 취소할까요?",
+      [
       { text: "취소", style: "cancel" },
       {
-        text: "종료",
+        text: "중단",
         style: "destructive",
         onPress: async () => {
-          const recordId = activeHikingRecordIdRef.current;
-          if (recordId) {
-            // 중단 = 완전 종료(기록 저장). status: completed → 워치도 종료됨
-            await apiService.updateHikingStatus(recordId, "completed", token);
+          try {
+            const recordId = activeHikingRecordIdRef.current;
+            if (recordId) {
+              await apiService.cancelHikingRecord(recordId, token);
+            }
+            resetNavigationState();
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : "산행을 중단하지 못했습니다.";
+            Alert.alert("중단 실패", message);
           }
-          resetNavigationState();
         },
       },
-    ]);
+      ],
+    );
   };
 
   /* ── 제스처 처리 (PanResponder) ── */
@@ -1783,10 +1794,14 @@ export default function LiveMapScreen() {
             longitude={currentLocation.longitude}
             width={36}
             height={36}
+            anchor={{ x: 0.5, y: 0.5 }}
             angle={currentHeading ?? 0}
             caption={{ text: "현위치" }}
             subCaption={{
-              text: [formatHeadingLabel(currentHeading), `${currentPace.toFixed(1)}km/h`]
+              text: [
+                formatHeadingLabel(currentHeading),
+                `${currentPace.toFixed(1)}km/h`,
+              ]
                 .filter(Boolean)
                 .join(" · "),
             }}
