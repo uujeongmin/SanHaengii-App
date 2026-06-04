@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  FlatList,
   Image,
   Modal,
   ScrollView,
@@ -22,6 +23,7 @@ import type {
   RootStackParamList,
   RootTabParamList,
 } from "../App";
+import WeatherCard from "../components/WeatherCard";
 import {
   getUserDisplayName,
   getUserInitial,
@@ -31,7 +33,11 @@ import {
   useWatchHealth,
   type WatchHealthStatus,
 } from "../contexts/WatchHealthContext";
-import { DEFAULT_MOUNTAIN_IMAGE, apiService } from "../data/api";
+import {
+  DEFAULT_MOUNTAIN_IMAGE,
+  apiService,
+  type MountainWeather,
+} from "../data/api";
 import { type Mountain, type MountainCourse } from "../data/mountains";
 
 type HomeNavProp = CompositeNavigationProp<
@@ -77,7 +83,9 @@ function formatKoreanTime(value: string | null | undefined) {
 }
 
 function formatWatchNumber(value: number | null | undefined, suffix: string) {
-  return Number.isFinite(value) ? `${Math.round(Number(value))}${suffix}` : "--";
+  return Number.isFinite(value)
+    ? `${Math.round(Number(value))}${suffix}`
+    : "--";
 }
 
 function formatWatchMeasuredAt(value: string | null | undefined) {
@@ -99,7 +107,8 @@ function getWatchStatusText(
   if (status === "syncing") return "스마트워치 데이터를 연결하는 중입니다.";
   if (status === "live") return "스마트워치 데이터가 실시간 반영 중입니다.";
   if (status === "empty") return "워치에서 전송된 데이터가 아직 없습니다.";
-  if (status === "error") return error ?? "스마트워치 데이터를 불러오지 못했습니다.";
+  if (status === "error")
+    return error ?? "스마트워치 데이터를 불러오지 못했습니다.";
   return "스마트워치 연결을 준비하고 있습니다.";
 }
 
@@ -136,6 +145,8 @@ export default function HomeScreen() {
   const [courses, setCourses] = useState<MountainCourse[]>([]);
   const [loading, setLoading] = useState(true);
   const [coursesLoading, setCoursesLoading] = useState(false);
+  const [weather, setWeather] = useState<MountainWeather | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedMountainImageIds, setFailedMountainImageIds] = useState<
     Set<string>
@@ -174,6 +185,33 @@ export default function HomeScreen() {
       setCourses([]);
     }
   }, [selectedMountainId]);
+
+  // 선택한 산의 날씨 예보 로드 (산 이름 기준)
+  useEffect(() => {
+    const mountain = mountains.find((m) => m.id === selectedMountainId);
+    if (!mountain) {
+      setWeather(null);
+      return;
+    }
+    let cancelled = false;
+    setWeatherLoading(true);
+    setWeather(null);
+    apiService
+      .getMountainWeather(mountain.name)
+      .then((result) => {
+        if (!cancelled) setWeather(result);
+      })
+      .catch((err) => {
+        console.error("Failed to fetch weather:", err);
+        if (!cancelled) setWeather(null);
+      })
+      .finally(() => {
+        if (!cancelled) setWeatherLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMountainId, mountains]);
 
   async function fetchMountains() {
     try {
@@ -230,6 +268,10 @@ export default function HomeScreen() {
       elevation: course.elevation,
     };
     navigation.navigate("내비게이션", params);
+  }
+
+  function handlePreviewCourse(course: MountainCourse) {
+    navigation.navigate("OfflineMapDetail", { course });
   }
 
   function handleToggleMountain(mountainId: string) {
@@ -372,15 +414,24 @@ export default function HomeScreen() {
               <Text style={styles.devPanelBadge}>DEV</Text>
             </View>
             <Text style={styles.devPanelDesc}>
-              버튼을 누르면 이상징후 감지 → 워치 알림 → 30초 후 자동신고 흐름을 시뮬레이션합니다.
+              버튼을 누르면 이상징후 감지 → 워치 알림 → 30초 후 자동신고 흐름을
+              시뮬레이션합니다.
             </Text>
             <View style={styles.devBtnRow}>
               {(
                 [
-                  { type: "hr_high", label: "심박↑\n(170bpm)", color: "#ef4444" },
-                  { type: "hr_low",  label: "심박↓\n(35bpm)",  color: "#f97316" },
-                  { type: "spo2",    label: "산소↓\n(85%)",    color: "#3b82f6" },
-                  { type: "temp_high", label: "체온↑\n(40.5°)", color: "#8b5cf6" },
+                  {
+                    type: "hr_high",
+                    label: "심박↑\n(170bpm)",
+                    color: "#ef4444",
+                  },
+                  { type: "hr_low", label: "심박↓\n(35bpm)", color: "#f97316" },
+                  { type: "spo2", label: "산소↓\n(85%)", color: "#3b82f6" },
+                  {
+                    type: "temp_high",
+                    label: "체온↑\n(40.5°)",
+                    color: "#8b5cf6",
+                  },
                 ] as const
               ).map(({ type, label, color }) => (
                 <TouchableOpacity
@@ -399,7 +450,11 @@ export default function HomeScreen() {
                 onPress={dismissAnomaly}
                 activeOpacity={0.8}
               >
-                <Ionicons name="close-circle-outline" size={14} color="#6b7280" />
+                <Ionicons
+                  name="close-circle-outline"
+                  size={14}
+                  color="#6b7280"
+                />
                 <Text style={styles.devResetText}>알림 강제 초기화</Text>
               </TouchableOpacity>
             )}
@@ -419,15 +474,9 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 산 카드 수평 스크롤 */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.mountainList}
-          snapToInterval={MOUNTAIN_CARD_W + 12}
-          decelerationRate="fast"
-        >
-          {loading ? (
+        {/* 산 카드 수평 리스트 (FlatList: 선택 리렌더 시에도 모든 카드 유지) */}
+        {loading ? (
+          <View style={styles.mountainList}>
             <View
               style={[
                 styles.mountainCard,
@@ -440,7 +489,9 @@ export default function HomeScreen() {
             >
               <ActivityIndicator color="#16a34a" />
             </View>
-          ) : error ? (
+          </View>
+        ) : error ? (
+          <View style={styles.mountainList}>
             <View
               style={[
                 styles.mountainCard,
@@ -479,30 +530,40 @@ export default function HomeScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-          ) : mountains.length === 0 ? (
-            <View
-              style={[
-                styles.mountainCard,
-                {
-                  width: SCREEN_WIDTH - 48,
-                  justifyContent: "center",
-                  alignItems: "center",
-                  backgroundColor: "#f3f4f6",
-                },
-              ]}
-            >
-              <Text style={{ color: "#9ca3af" }}>
-                등록된 산 정보가 없습니다.
-              </Text>
-            </View>
-          ) : (
-            mountains.map((mountain, idx) => {
+          </View>
+        ) : (
+          <FlatList
+            horizontal
+            data={mountains}
+            keyExtractor={(mountain) => mountain.id}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.mountainList}
+            snapToInterval={MOUNTAIN_CARD_W + 12}
+            decelerationRate="fast"
+            extraData={selectedMountainId}
+            ListEmptyComponent={
+              <View
+                style={[
+                  styles.mountainCard,
+                  {
+                    width: SCREEN_WIDTH - 48,
+                    justifyContent: "center",
+                    alignItems: "center",
+                    backgroundColor: "#f3f4f6",
+                  },
+                ]}
+              >
+                <Text style={{ color: "#9ca3af" }}>
+                  등록된 산 정보가 없습니다.
+                </Text>
+              </View>
+            }
+            renderItem={({ item: mountain, index: idx }) => {
               const isSelected = selectedMountainId === mountain.id;
               const bgColor =
                 MOUNTAIN_GRADIENT_COLORS[idx % MOUNTAIN_GRADIENT_COLORS.length];
               return (
                 <TouchableOpacity
-                  key={mountain.id}
                   style={[
                     styles.mountainCard,
                     isSelected && styles.mountainCardSelected,
@@ -542,13 +603,16 @@ export default function HomeScreen() {
                   </View>
                 </TouchableOpacity>
               );
-            })
-          )}
-        </ScrollView>
+            }}
+          />
+        )}
 
         {/* ── 선택된 산의 코스 목록 ── */}
         {selectedMountain && (
           <View style={styles.coursesSection}>
+            {/* 산악 날씨 예보 */}
+            <WeatherCard weather={weather} loading={weatherLoading} />
+
             <View style={styles.coursesSectionHeader}>
               <View style={styles.sectionAccent} />
               <Text style={styles.coursesSectionTitle}>
@@ -651,16 +715,34 @@ export default function HomeScreen() {
                             </Text>
                           </View>
                         </View>
-                        <TouchableOpacity
-                          style={styles.startBtn}
-                          onPress={() => handleStartCourse(course)}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="navigate" size={15} color="#ffffff" />
-                          <Text style={styles.startBtnText}>
-                            이 코스로 시작하기
-                          </Text>
-                        </TouchableOpacity>
+                        <View style={styles.courseBtnRow}>
+                          <TouchableOpacity
+                            style={styles.previewBtn}
+                            onPress={() => handlePreviewCourse(course)}
+                            activeOpacity={0.85}
+                          >
+                            <Ionicons
+                              name="map-outline"
+                              size={15}
+                              color="#2563eb"
+                            />
+                            <Text style={styles.previewBtnText}>
+                              지도 미리보기
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.startBtn}
+                            onPress={() => handleStartCourse(course)}
+                            activeOpacity={0.85}
+                          >
+                            <Ionicons
+                              name="navigate"
+                              size={15}
+                              color="#ffffff"
+                            />
+                            <Text style={styles.startBtnText}>시작하기</Text>
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     </View>
                   );
@@ -839,6 +921,7 @@ const styles = StyleSheet.create({
     padding: 20,
     marginHorizontal: 24,
     marginTop: 16,
+    marginBottom: 8,
     elevation: 2,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
@@ -1086,7 +1169,22 @@ const styles = StyleSheet.create({
   },
   courseMetaText: { fontSize: 12, fontWeight: "600", color: "#374151" },
   courseMetaDivider: { width: 1, height: 12, backgroundColor: "#e5e7eb" },
+  courseBtnRow: { flexDirection: "row", gap: 8 },
+  previewBtn: {
+    flex: 1,
+    backgroundColor: "#eff6ff",
+    borderRadius: 14,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+  },
+  previewBtnText: { fontSize: 13, fontWeight: "700", color: "#2563eb" },
   startBtn: {
+    flex: 1,
     backgroundColor: "#16a34a",
     borderRadius: 14,
     paddingVertical: 12,
@@ -1166,14 +1264,14 @@ const styles = StyleSheet.create({
     marginTop: -4,
   },
   devPanel: {
-    marginHorizontal: 20,
+    marginHorizontal: 25,
     marginBottom: 16,
     backgroundColor: "#faf5ff",
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#e9d5ff",
     padding: 14,
-    gap: 10,
+    gap: 12,
   },
   devPanelHeader: {
     flexDirection: "row",

@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as SecureStore from "expo-secure-store";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,7 +16,10 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { RootStackParamList } from "../App";
 import { useAuth } from "../contexts/AuthContext";
-import { MountainCourse } from "../data/api";
+import { apiService, MountainCourse } from "../data/api";
+
+const DEFAULT_COURSE_THUMB =
+  "https://images.unsplash.com/photo-1685330186861-278ae211fd65?auto=format&fit=crop&q=80&w=800";
 
 type SavedMapsNavProp = NativeStackNavigationProp<
   RootStackParamList,
@@ -30,6 +33,37 @@ export default function SavedMapsScreen() {
   const { user } = useAuth();
   const [savedCourses, setSavedCourses] = useState<MountainCourse[]>([]);
   const [loading, setLoading] = useState(true);
+  // 산 이름/ID → image_url (코스 탭과 동일한 unified_mountain_paths 소스)
+  const [imgByMountain, setImgByMountain] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+
+  // 저장된 코스엔 img가 없을 수 있어 산 목록(unified)의 image_url로 보강
+  useEffect(() => {
+    apiService
+      .getMountains()
+      .then((list) => {
+        const map = new Map<string, string>();
+        list.forEach((mountain) => {
+          if (!mountain.img) return;
+          map.set(mountain.name, mountain.img);
+          map.set(mountain.id, mountain.img);
+        });
+        setImgByMountain(map);
+      })
+      .catch((error) =>
+        console.warn("Failed to load mountain images:", error),
+      );
+  }, []);
+
+  // 저장된 코스의 산에 해당하는 썸네일 반영(없을 때만 기본 이미지)
+  const resolveThumb = useCallback(
+    (course: MountainCourse) =>
+      imgByMountain.get(course.mountainId) ||
+      course.img ||
+      DEFAULT_COURSE_THUMB,
+    [imgByMountain],
+  );
 
   const loadSavedMaps = useCallback(async () => {
     try {
@@ -121,7 +155,7 @@ export default function SavedMapsScreen() {
             >
               <View style={styles.imageWrapper}>
                 <Image
-                  source={{ uri: course.img }}
+                  source={{ uri: resolveThumb(course) }}
                   style={styles.image}
                   resizeMode="cover"
                 />

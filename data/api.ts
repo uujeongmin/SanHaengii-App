@@ -185,6 +185,7 @@ interface SeoulMountainInfoRow {
   description?: string | null;
   short_description?: string | null;
   image_url?: string | null;
+  weather_mountain_num?: number | string | null;
 }
 
 export interface AuthUser {
@@ -337,12 +338,60 @@ export interface LoginResponse {
   isNewUser: boolean;
 }
 
+/** mountain_weather 테이블 행 타입 (기상청 시간대별 예보) */
+interface MountainWeatherRow {
+  id?: number;
+  mountain_num: number | string;
+  base_date?: string | null;
+  base_time?: string | null;
+  fcst_date: string;
+  fcst_time: string;
+  category: string;
+  fcst_value: string;
+}
+
+/** 한 예보 시각(fcst_date+fcst_time)에 대한 통합 날씨 */
+export interface WeatherForecastHour {
+  /** YYYYMMDD */
+  date: string;
+  /** HHmm (예: "1500") */
+  time: string;
+  /** 기온(℃) */
+  tmp: number | null;
+  /** 강수확률(%) */
+  pop: number | null;
+  /** 강수량(문자열, 예: "강수없음", "1.0mm 미만") */
+  pcp: string | null;
+  /** 습도(%) */
+  reh: number | null;
+  /** 풍속(m/s) */
+  wsd: number | null;
+  /** 하늘상태 1=맑음 3=구름많음 4=흐림 */
+  sky: number | null;
+}
+
+export interface MountainWeather {
+  /** weather_mountain_num이 있고 예보 데이터를 받았는지 */
+  available: boolean;
+  mountainNum: number | null;
+  /** 현재(가장 가까운 미래) 시각 예보 */
+  current: WeatherForecastHour | null;
+  /** 시간순 정렬된 예보(현재 이후) */
+  hourly: WeatherForecastHour[];
+  /** 안전 경고 문구 목록 */
+  warnings: string[];
+}
+
 let cachedCourseSummaries: SeoulMountainPathRow[] | null = null;
 const courseCache = new Map<string, MountainCourse[]>();
 let cachedRecommendedMountains: Mountain[] | null = null;
 let cachedRecommendedRows: RecommendedCourseRow[] | null = null;
 const unifiedMountainPathCache = new Map<string, UnifiedMountainPath | null>();
 const courseRouteCache = new Map<string, PathResult>();
+// 산 이름(정규화) → weather_mountain_num. seoul_mountain_info에서 1회 로드.
+let cachedWeatherNumByName: Map<string, number> | null = null;
+// weather_mountain_num → 파싱된 날씨. 세션 캐시(짧은 데모이므로 갱신 불필요).
+const mountainWeatherCache = new Map<number, MountainWeather>();
 
 async function getErrorMessage(
   response: Response,
@@ -713,7 +762,7 @@ function getMountainNameFromId(mountainId: string): string {
 const SEOUL_MOUNTAIN_INFO_TABLES = ["seoul_mountain_info"];
 
 const SEOUL_MOUNTAIN_INFO_SELECT =
-  "id,mountain_name,address,height,description,short_description,image_url";
+  "id,mountain_name,address,height,description,short_description,image_url,weather_mountain_num";
 let cachedMountainInfoRows: SeoulMountainInfoRow[] | null = null;
 
 /**
@@ -1124,6 +1173,161 @@ function buildMountainFromRailwayRow(
     img: cleanImageUrl(row.image_url, DEFAULT_MOUNTAIN_IMAGE),
     courseCount: toDisplayCourseCount(courseCount),
   };
+}
+
+// ── mountain_weather 유틸 (기상청 시간대별 예보) ─────────────────────────
+
+const MOUNTAIN_WEATHER_TABLE = "mountain_weather";
+
+function toWeatherNumber(value: string | null | undefined): number | null {
+  if (value == null) return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+/** YYYYMMDDHHmm 정수 키 (시각 비교용) */
+function weatherSortKey(date: string, time: string): number {
+  return Number(`${date}${time.padStart(4, "0")}`);
+}
+
+/** seoul_mountain_info에서 산이름(정규화)→weather_mountain_num 맵을 1회 로드 */
+async function getWeatherNumByName(): Promise<Map<string, number>> {
+  if (cachedWeatherNumByName) return cachedWeatherNumByName;
+  const map = new Map<string, number>();
+  try {
+    const rows = await getSeoulMountainInfoRows();
+    rows.forEach((row) => {
+      const key = normalizeMountainKey(row.mountain_name);
+      const num =
+        row.weather_mountain_num == null
+          ? null
+          : toWeatherNumber(String(row.weather_mountain_num));
+      if (key && num != null) map.set(key, num);
+    });
+  } catch (error) {
+    console.warn("[API] weather_mountain_num 로드 실패:", error);
+  }
+  cachedWeatherNumByName = map;
+  return cachedWeatherNumByName;
+}
+
+
+/** 같은 fcst_date+fcst_time 행들을 묶어 시간별 예보로 변환(시간순 정렬) */
+function groupWeatherRows(rows: MountainWeatherRow[]): WeatherForecastHour[] {
+  const byHour = new Map<string, WeatherForecastHour>();
+  rows.forEach((row) => {
+    const date = String(row.fcst_date ?? "");
+    const time = String(row.fcst_time ?? "").padStart(4, "0");
+    if (!date || !time) return;
+    const key = `${date}${time}`;
+    let hour = byHour.get(key);
+    if (!hour) {
+      hour = {
+        date,
+        time,
+        tmp: null,
+        pop: null,
+        pcp: null,
+        reh: null,
+        wsd: null,
+        sky: null,
+      };
+      byHour.set(key, hour);
+    }
+    const value = String(row.fcst_value ?? "").trim();
+    switch (row.category) {
+      case "TMP":
+        hour.tmp = toWeatherNumber(value);
+        break;
+      case "POP":
+        hour.pop = toWeatherNumber(value);
+        break;
+      case "PCP":
+        hour.pcp = value || null;
+        break;
+      case "REH":
+        hour.reh = toWeatherNumber(value);
+        break;
+      case "WSD":
+        hour.wsd = toWeatherNumber(value);
+        break;
+      case "SKY":
+        hour.sky = toWeatherNumber(value);
+        break;
+      default:
+        break;
+    }
+  });
+  return Array.from(byHour.values()).sort(
+    (a, b) => weatherSortKey(a.date, a.time) - weatherSortKey(b.date, b.time),
+  );
+}
+
+/** 강수량/강수확률이 "비 옴"을 의미하는지 */
+function hasPrecipitation(hour: WeatherForecastHour): boolean {
+  const pcp = (hour.pcp ?? "").trim();
+  const noRain =
+    pcp === "" ||
+    pcp === "강수없음" ||
+    pcp === "없음" ||
+    pcp === "0" ||
+    pcp === "0.0";
+  if (!noRain) return true;
+  return (hour.pop ?? 0) >= 60;
+}
+
+/** 예보 구간(시간별 배열) 전체를 스캔해 안전 경고 문구를 집계 */
+function buildWeatherWarnings(hours: WeatherForecastHour[]): string[] {
+  if (hours.length === 0) return [];
+  const flags = {
+    rain: false,
+    cold: false,
+    heat: false,
+    wind: false,
+    cloudy: false,
+  };
+  hours.forEach((hour) => {
+    if (hasPrecipitation(hour)) flags.rain = true;
+    if (hour.tmp != null && hour.tmp <= 0) flags.cold = true;
+    if (hour.tmp != null && hour.tmp >= 30) flags.heat = true;
+    if (hour.wsd != null && hour.wsd >= 9) flags.wind = true;
+    if (hour.sky === 4) flags.cloudy = true;
+  });
+
+  const warnings: string[] = [];
+  if (flags.rain) {
+    warnings.push("강수 예보 — 우의·방수 장비를 준비하세요.");
+  }
+  if (flags.cold) {
+    warnings.push("영하의 추위 — 방한 장비와 빙판 미끄럼에 주의하세요.");
+  }
+  if (flags.heat) {
+    warnings.push("폭염 예보 — 수분을 충분히 섭취하고 무리한 산행을 피하세요.");
+  }
+  if (flags.wind) {
+    warnings.push("강풍 예보 — 능선·정상부에서 특히 주의하세요.");
+  }
+  if (flags.cloudy && warnings.length === 0) {
+    warnings.push("흐린 날씨 — 시야 확보에 유의하세요.");
+  }
+  return warnings;
+}
+
+/** 현재(가장 가까운 미래) 예보 시각 선택. 미래가 없으면 마지막 예보 */
+function pickCurrentHour(
+  hours: WeatherForecastHour[],
+): WeatherForecastHour | null {
+  if (hours.length === 0) return null;
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST 보정
+  const stamp =
+    `${now.getUTCFullYear()}` +
+    `${String(now.getUTCMonth() + 1).padStart(2, "0")}` +
+    `${String(now.getUTCDate()).padStart(2, "0")}` +
+    `${String(now.getUTCHours()).padStart(2, "0")}` +
+    `${String(now.getUTCMinutes()).padStart(2, "0")}`;
+  const nowKey = Number(stamp);
+  const future = hours.find((h) => weatherSortKey(h.date, h.time) >= nowKey);
+  return future ?? hours[hours.length - 1];
 }
 
 export const apiService = {
@@ -2114,6 +2318,61 @@ export const apiService = {
     } catch (error) {
       console.error("[API] Error in getUnifiedMountainPath:", error);
       throw error;
+    }
+  },
+
+  /**
+   * 산의 기상청 시간대별 예보(mountain_weather)를 가져옵니다.
+   * seoul_mountain_info.weather_mountain_num이 없는 산은 available=false 로 반환.
+   */
+  async getMountainWeather(mountainName: string): Promise<MountainWeather> {
+    const empty: MountainWeather = {
+      available: false,
+      mountainNum: null,
+      current: null,
+      hourly: [],
+      warnings: [],
+    };
+    try {
+      const numByName = await getWeatherNumByName();
+      const num = numByName.get(normalizeMountainKey(mountainName)) ?? null;
+      if (num == null) return empty;
+
+      const cached = mountainWeatherCache.get(num);
+      if (cached) return cached;
+
+      // filter body에 limit 키를 넣으면 기본 100행 상한이 풀려 전량 조회됨.
+      const rows = await fetchFilteredDataRows<MountainWeatherRow>(
+        MOUNTAIN_WEATHER_TABLE,
+        { mountain_num: num, limit: 5000 },
+        { select: "mountain_num,fcst_date,fcst_time,category,fcst_value" },
+      );
+
+      const allHours = groupWeatherRows(rows);
+      if (allHours.length === 0) return empty;
+
+      // current = 현재 시각에 가장 가까운(>= now, 없으면 마지막) 예보 슬롯
+      const current = pickCurrentHour(allHours);
+      const currentIdx = current ? allHours.indexOf(current) : -1;
+      // strip = current부터 앞으로의 예보. 미래가 부족하면 current를 끝에 두는
+      // 최근 구간(최대 12칸)으로 폴백해 항상 채워지도록 함.
+      let hourly = currentIdx >= 0 ? allHours.slice(currentIdx) : allHours;
+      if (hourly.length < 6 && currentIdx >= 0) {
+        hourly = allHours.slice(Math.max(0, currentIdx - 11), currentIdx + 1);
+      }
+
+      const result: MountainWeather = {
+        available: true,
+        mountainNum: num,
+        current,
+        hourly,
+        warnings: buildWeatherWarnings(hourly),
+      };
+      mountainWeatherCache.set(num, result);
+      return result;
+    } catch (error) {
+      console.error("[API] Error in getMountainWeather:", error);
+      return empty;
     }
   },
 

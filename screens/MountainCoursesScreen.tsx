@@ -15,7 +15,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { CourseParams, RootStackParamList } from "../App";
-import { apiService } from "../data/api";
+import WeatherCard from "../components/WeatherCard";
+import { apiService, type MountainWeather } from "../data/api";
 import { type Mountain, type MountainCourse } from "../data/mountains";
 
 type MountainCoursesNavProp = NativeStackNavigationProp<
@@ -44,6 +45,8 @@ export default function MountainCoursesScreen() {
   const [mountain, setMountain] = useState<Mountain | null>(null);
   const [courses, setCourses] = useState<MountainCourse[]>([]);
   const [loading, setLoading] = useState(true);
+  const [weather, setWeather] = useState<MountainWeather | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
@@ -59,6 +62,17 @@ export default function MountainCoursesScreen() {
       ]);
       setMountain(mtData);
       setCourses(courseData);
+
+      // 현재 시간 기준 산악 날씨 예보 로드 (산 이름 기준)
+      setWeatherLoading(true);
+      apiService
+        .getMountainWeather(mtData.name)
+        .then(setWeather)
+        .catch((err) => {
+          console.error("Failed to fetch weather:", err);
+          setWeather(null);
+        })
+        .finally(() => setWeatherLoading(false));
     } catch (error) {
       console.error("Failed to fetch mountain courses:", error);
     } finally {
@@ -87,6 +101,10 @@ export default function MountainCoursesScreen() {
       elevation: course.elevation,
     };
     navigation.navigate("MainTabs", { screen: "내비게이션", params });
+  }
+
+  function handlePreviewCourse(course: MountainCourse) {
+    navigation.navigate("OfflineMapDetail", { course });
   }
 
   return (
@@ -137,6 +155,9 @@ export default function MountainCoursesScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
+        {/* 현재 시간 기준 산악 날씨 */}
+        {!loading && <WeatherCard weather={weather} loading={weatherLoading} />}
+
         {loading ? (
           <View style={{ padding: 40, alignItems: "center" }}>
             <ActivityIndicator size="large" color="#16a34a" />
@@ -231,15 +252,25 @@ export default function MountainCoursesScreen() {
                     </View>
                   </View>
 
-                  {/* 시작 버튼 */}
-                  <TouchableOpacity
-                    style={styles.startBtn}
-                    onPress={() => handleStartCourse(course)}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="navigate" size={16} color="#ffffff" />
-                    <Text style={styles.startBtnText}>이 코스로 시작하기</Text>
-                  </TouchableOpacity>
+                  {/* 미리보기 + 시작 버튼 */}
+                  <View style={styles.btnRow}>
+                    <TouchableOpacity
+                      style={styles.previewBtn}
+                      onPress={() => handlePreviewCourse(course)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="map-outline" size={16} color="#2563eb" />
+                      <Text style={styles.previewBtnText}>지도 미리보기</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.startBtn}
+                      onPress={() => handleStartCourse(course)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="navigate" size={16} color="#ffffff" />
+                      <Text style={styles.startBtnText}>시작하기</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             );
@@ -391,14 +422,29 @@ const styles = StyleSheet.create({
   },
   metaText: { fontSize: 13, fontWeight: "600", color: "#374151" },
   metaDivider: { width: 1, height: 14, backgroundColor: "#e5e7eb" },
+  btnRow: { flexDirection: "row", gap: 10 },
+  previewBtn: {
+    flex: 1,
+    backgroundColor: "#eff6ff",
+    borderRadius: 14,
+    paddingVertical: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+  },
+  previewBtnText: { fontSize: 14, fontWeight: "700", color: "#2563eb" },
   startBtn: {
+    flex: 1,
     backgroundColor: "#16a34a",
     borderRadius: 14,
     paddingVertical: 13,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 6,
   },
   startBtnText: { fontSize: 15, fontWeight: "700", color: "#ffffff" },
 

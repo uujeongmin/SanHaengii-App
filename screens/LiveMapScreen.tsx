@@ -55,6 +55,13 @@ const SAVED_MAPS_KEY_BASE = "sanhaengii_saved_maps";
 const GPS_TIMEOUT_MS = 10000;
 const LAST_KNOWN_MAX_AGE_MS = 30000;
 const GPS_FOLLOW_ZOOM = 16;
+// 보행속도(페이스) 추정용 걸음수 측정 간격.
+// 워치 누적 걸음수는 3초 폴링 사이 변화가 거의 없어(혹은 0) 직전값 비교 시
+// 페이스가 0/급변으로 부정확함 → 최소 PACE_MIN_WINDOW_MS 떨어진 과거 샘플을
+// 기준으로 변화량을 계산하고, PACE_MAX_WINDOW_MS보다 오래된 샘플은 폐기.
+const PACE_MIN_WINDOW_MS = 15000;
+const PACE_MAX_WINDOW_MS = 45000;
+const PACE_STRIDE_KM = 0.00075; // 평균 보폭 약 0.75m
 // GPS를 아직 못 잡았을 때 지도 최초 렌더에만 쓰는 viewport 좌표.
 // 절대 "현위치" 값으로 사용하지 않습니다(현위치는 실제 GPS만 반영).
 const INITIAL_CAMERA = { latitude: 36.5, longitude: 127.8 };
@@ -335,8 +342,8 @@ export default function LiveMapScreen() {
   const [heartRate, setHeartRate] = useState(0); // bpm
   const [unifiedLoading, setUnifiedLoading] = useState(false);
 
-  // 워치 걸음수로 페이스 추정 (이전 측정값 보관)
-  const prevStepsRef = useRef<{ steps: number; time: number } | null>(null);
+  // 워치 걸음수로 페이스 추정: 직전 1개가 아니라 일정 간격의 샘플 히스토리를 보관
+  const stepHistoryRef = useRef<{ steps: number; time: number }[]>([]);
   // 워치 기반 페이스를 한 번이라도 산출했는지 (이후 시뮬레이션 페이스 중단)
   const hasWatchPaceRef = useRef(false);
   // GPS 기반 남은거리를 산출 중인지 (true면 시뮬레이션 거리 차감 중단)
@@ -1229,28 +1236,52 @@ export default function LiveMapScreen() {
       setHeartRate(latestWatchData.heartRate);
     }
 
-    // 2. 페이스: 워치 걸음수 변화량(보폭 0.75m)으로 추정
+    // 2. 페이스: 워치 걸음수 변화량(보폭 0.75m)으로 추정.
+    //    3초 간격 직전값은 변화가 거의 없어 부정확 → 일정 간격(≥15초) 떨어진
+    //    과거 샘플을 기준으로 변화량을 계산해 안정적인 평균 보행속도를 산출.
     const steps = latestWatchData.steps;
     const measuredAt = latestWatchData.measuredAt
       ? new Date(latestWatchData.measuredAt).getTime()
       : null;
 
     if (steps != null && measuredAt) {
-      const prev = prevStepsRef.current;
-      if (prev && measuredAt > prev.time && steps >= prev.steps) {
-        const deltaSteps = steps - prev.steps;
-        const deltaHours = (measuredAt - prev.time) / 3600000;
-        if (deltaHours > 0) {
-          const STRIDE_KM = 0.00075; // 보폭 약 0.75m
-          const pace = (deltaSteps * STRIDE_KM) / deltaHours;
-          // 비정상값 제외(0~12km/h)
-          if (pace >= 0 && pace < 12) {
-            setCurrentPace(pace);
-            hasWatchPaceRef.current = true;
+      const history = stepHistoryRef.current;
+      const last = history[history.length - 1];
+
+      // 새 측정값만 누적(중복 타임스탬프 무시)
+      if (!last || measuredAt > last.time) {
+        history.push({ steps, time: measuredAt });
+
+        // 너무 오래된 샘플 폐기(최소 2개는 유지)
+        while (
+          history.length > 2 &&
+          measuredAt - history[0].time > PACE_MAX_WINDOW_MS
+        ) {
+          history.shift();
+        }
+
+        // 적정 간격(≥ PACE_MIN_WINDOW_MS) 떨어진 가장 최근 샘플을 기준점으로 선택
+        let baseline: { steps: number; time: number } | null = null;
+        for (let i = history.length - 2; i >= 0; i--) {
+          if (measuredAt - history[i].time >= PACE_MIN_WINDOW_MS) {
+            baseline = history[i];
+            break;
+          }
+        }
+
+        if (baseline && steps >= baseline.steps) {
+          const deltaSteps = steps - baseline.steps;
+          const deltaHours = (measuredAt - baseline.time) / 3600000;
+          if (deltaHours > 0) {
+            const pace = (deltaSteps * PACE_STRIDE_KM) / deltaHours;
+            // 비정상값 제외(0~12km/h)
+            if (pace >= 0 && pace < 12) {
+              setCurrentPace(pace);
+              hasWatchPaceRef.current = true;
+            }
           }
         }
       }
-      prevStepsRef.current = { steps, time: measuredAt };
     }
   }, [latestWatchData]);
 
