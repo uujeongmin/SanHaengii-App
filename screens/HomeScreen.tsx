@@ -405,61 +405,59 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* ── [DEV] 이상징후 테스트 패널 ── */}
-        {__DEV__ && (
-          <View style={styles.devPanel}>
-            <View style={styles.devPanelHeader}>
-              <Ionicons name="flask-outline" size={15} color="#7c3aed" />
-              <Text style={styles.devPanelTitle}>이상징후 테스트</Text>
-              <Text style={styles.devPanelBadge}>DEV</Text>
-            </View>
-            <Text style={styles.devPanelDesc}>
-              버튼을 누르면 이상징후 감지 → 워치 알림 → 30초 후 자동신고 흐름을
-              시뮬레이션합니다.
-            </Text>
-            <View style={styles.devBtnRow}>
-              {(
-                [
-                  {
-                    type: "hr_high",
-                    label: "심박↑\n(170bpm)",
-                    color: "#ef4444",
-                  },
-                  { type: "hr_low", label: "심박↓\n(35bpm)", color: "#f97316" },
-                  { type: "spo2", label: "산소↓\n(85%)", color: "#3b82f6" },
-                  {
-                    type: "temp_high",
-                    label: "체온↑\n(40.5°)",
-                    color: "#8b5cf6",
-                  },
-                ] as const
-              ).map(({ type, label, color }) => (
-                <TouchableOpacity
-                  key={type}
-                  style={[styles.devBtn, { borderColor: color }]}
-                  activeOpacity={0.75}
-                  onPress={() => triggerTestAnomaly(type)}
-                >
-                  <Text style={[styles.devBtnText, { color }]}>{label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            {anomalyAlert && (
-              <TouchableOpacity
-                style={styles.devResetBtn}
-                onPress={dismissAnomaly}
-                activeOpacity={0.8}
-              >
-                <Ionicons
-                  name="close-circle-outline"
-                  size={14}
-                  color="#6b7280"
-                />
-                <Text style={styles.devResetText}>알림 강제 초기화</Text>
-              </TouchableOpacity>
-            )}
+        {/* ── 이상징후 테스트 패널 ── */}
+        <View style={styles.devPanel}>
+          <View style={styles.devPanelHeader}>
+            <Ionicons name="flask-outline" size={15} color="#7c3aed" />
+            <Text style={styles.devPanelTitle}>이상징후 테스트</Text>
+            <Text style={styles.devPanelBadge}>테스트</Text>
           </View>
-        )}
+          <Text style={styles.devPanelDesc}>
+            버튼을 누르면 이상징후 감지 → 워치 알림 → 30초 후 자동신고 흐름을
+            시뮬레이션합니다.
+          </Text>
+          <View style={styles.devBtnRow}>
+            {(
+              [
+                {
+                  type: "hr_high",
+                  label: "심박↑\n(170bpm)",
+                  color: "#ef4444",
+                },
+                { type: "hr_low", label: "심박↓\n(35bpm)", color: "#f97316" },
+                { type: "spo2", label: "산소↓\n(85%)", color: "#3b82f6" },
+                {
+                  type: "temp_high",
+                  label: "체온↑\n(40.5°)",
+                  color: "#8b5cf6",
+                },
+              ] as const
+            ).map(({ type, label, color }) => (
+              <TouchableOpacity
+                key={type}
+                style={[styles.devBtn, { borderColor: color }]}
+                activeOpacity={0.75}
+                onPress={() => triggerTestAnomaly(type)}
+              >
+                <Text style={[styles.devBtnText, { color }]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {anomalyAlert && (
+            <TouchableOpacity
+              style={styles.devResetBtn}
+              onPress={dismissAnomaly}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name="close-circle-outline"
+                size={14}
+                color="#6b7280"
+              />
+              <Text style={styles.devResetText}>알림 강제 초기화</Text>
+            </TouchableOpacity>
+          )}
+        </View>
 
         {/* ── 산 선택 섹션 ── */}
         <View style={styles.sectionHeader}>
