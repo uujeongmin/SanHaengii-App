@@ -81,6 +81,7 @@ const GPS_PACE_SMOOTHING = 0.45;
 const ETA_SMOOTHING_RATIO = 0.2;
 const ETA_SMOOTHING_MIN_STEP_MIN = 1;
 const ETA_SMOOTHING_MAX_STEP_MIN = 3;
+const HEADING_MIN_CHANGE_DEG = 3;
 // GPS를 아직 못 잡았을 때 지도 최초 렌더에만 쓰는 viewport 좌표.
 // 절대 "현위치" 값으로 사용하지 않습니다(현위치는 실제 GPS만 반영).
 const INITIAL_CAMERA = { latitude: 36.5, longitude: 127.8 };
@@ -193,6 +194,34 @@ function parseElevationMeters(elevationStr: string | undefined): number {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeDegrees(value: number): number {
+  return ((value % 360) + 360) % 360;
+}
+
+function getAngularDistanceDeg(a: number, b: number): number {
+  const diff = Math.abs(normalizeDegrees(a) - normalizeDegrees(b));
+  return Math.min(diff, 360 - diff);
+}
+
+function getDeviceHeadingDegrees(
+  heading: Location.LocationHeadingObject,
+): number | null {
+  const candidate =
+    typeof heading.trueHeading === "number" && heading.trueHeading >= 0
+      ? heading.trueHeading
+      : heading.magHeading;
+
+  if (!Number.isFinite(candidate) || candidate < 0) return null;
+  return normalizeDegrees(candidate);
+}
+
+function formatHeadingLabel(heading: number | null): string {
+  if (heading == null) return "";
+  const directions = ["북", "북동", "동", "남동", "남", "남서", "서", "북서"];
+  const index = Math.round(normalizeDegrees(heading) / 45) % directions.length;
+  return `${directions[index]} ${Math.round(normalizeDegrees(heading))}°`;
 }
 
 function getUserAgeYears(age: string | null | undefined): number {
@@ -445,6 +474,7 @@ export default function LiveMapScreen() {
   // 현위치는 실제 GPS를 잡기 전까지 null (기본 좌표를 현위치로 쓰지 않음)
   const [currentLocation, setCurrentLocation] = useState<MapCoord | null>(null);
   const [hasGpsLocation, setHasGpsLocation] = useState(false);
+  const [currentHeading, setCurrentHeading] = useState<number | null>(null);
 
   // SNS 인기 조망점(포토스팟) 상태
   const [photoSpots, setPhotoSpots] = useState<PhotoSpot[]>([]);
@@ -757,6 +787,41 @@ export default function LiveMapScreen() {
     return () => {
       cancelled = true;
       locationSubscription?.remove();
+    };
+  }, []);
+
+  // 휴대폰이 바라보는 나침반 방향을 현재 위치 마커 회전에 반영합니다.
+  useEffect(() => {
+    let headingSubscription: Location.LocationSubscription | null = null;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await ensureLocationReady();
+        if (cancelled) return;
+
+        headingSubscription = await Location.watchHeadingAsync((heading) => {
+          const nextHeading = getDeviceHeadingDegrees(heading);
+          if (nextHeading == null) return;
+
+          setCurrentHeading((prev) => {
+            if (
+              prev != null &&
+              getAngularDistanceDeg(prev, nextHeading) < HEADING_MIN_CHANGE_DEG
+            ) {
+              return prev;
+            }
+            return nextHeading;
+          });
+        });
+      } catch (err) {
+        if (!cancelled) console.log("[LiveMap] Heading setup error:", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      headingSubscription?.remove();
     };
   }, []);
 
@@ -1718,8 +1783,13 @@ export default function LiveMapScreen() {
             longitude={currentLocation.longitude}
             width={36}
             height={36}
+            angle={currentHeading ?? 0}
             caption={{ text: "현위치" }}
-            subCaption={{ text: `${currentPace.toFixed(1)}km/h` }}
+            subCaption={{
+              text: [formatHeadingLabel(currentHeading), `${currentPace.toFixed(1)}km/h`]
+                .filter(Boolean)
+                .join(" · "),
+            }}
           >
             <MapMarkerIcon name="navigate" color="#2563eb" />
           </NaverMapMarkerOverlay>
