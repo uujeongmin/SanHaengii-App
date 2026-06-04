@@ -108,10 +108,12 @@ function MapMarkerIcon({
   name,
   color,
   set = "ionicons",
+  rotationDeg = 0,
 }: {
   name: string;
   color: string;
   set?: keyof typeof MARKER_ICON_SETS;
+  rotationDeg?: number;
 }) {
   const IconSet = MARKER_ICON_SETS[set];
   return (
@@ -120,7 +122,12 @@ function MapMarkerIcon({
       collapsable={false}
       style={[markerBubbleStyle, { backgroundColor: color }]}
     >
-      <IconSet name={name as any} size={18} color="#ffffff" />
+      <IconSet
+        name={name as any}
+        size={18}
+        color="#ffffff"
+        style={{ transform: [{ rotate: `${rotationDeg}deg` }] }}
+      />
     </View>
   );
 }
@@ -215,13 +222,6 @@ function getDeviceHeadingDegrees(
 
   if (!Number.isFinite(candidate) || candidate < 0) return null;
   return normalizeDegrees(candidate);
-}
-
-function formatHeadingLabel(heading: number | null): string {
-  if (heading == null) return "";
-  const directions = ["북", "북동", "동", "남동", "남", "남서", "서", "북서"];
-  const index = Math.round(normalizeDegrees(heading) / 45) % directions.length;
-  return `${directions[index]} ${Math.round(normalizeDegrees(heading))}°`;
 }
 
 function getUserAgeYears(age: string | null | undefined): number {
@@ -1795,18 +1795,16 @@ export default function LiveMapScreen() {
             width={36}
             height={36}
             anchor={{ x: 0.5, y: 0.5 }}
-            angle={currentHeading ?? 0}
             caption={{ text: "현위치" }}
             subCaption={{
-              text: [
-                formatHeadingLabel(currentHeading),
-                `${currentPace.toFixed(1)}km/h`,
-              ]
-                .filter(Boolean)
-                .join(" · "),
+              text: `${currentPace.toFixed(1)}km/h`,
             }}
           >
-            <MapMarkerIcon name="navigate" color="#2563eb" />
+            <MapMarkerIcon
+              name="navigate"
+              color="#2563eb"
+              rotationDeg={currentHeading ?? 0}
+            />
           </NaverMapMarkerOverlay>
         )}
 
