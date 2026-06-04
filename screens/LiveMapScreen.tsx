@@ -62,6 +62,25 @@ const GPS_FOLLOW_ZOOM = 16;
 const PACE_MIN_WINDOW_MS = 15000;
 const PACE_MAX_WINDOW_MS = 45000;
 const PACE_STRIDE_KM = 0.00075; // 평균 보폭 약 0.75m
+const DEFAULT_USER_AGE = 25;
+const DEFAULT_PACE_KMH = 3;
+const DEFAULT_SPO2_BASELINE = 98;
+const HR_RATIO_BASELINE = 0.65;
+const HR_ETA_WEIGHT = 1.1;
+const SPO2_ETA_WEIGHT = 0.04;
+const MAX_SPO2_DROP = 8;
+const MIN_HEALTH_ETA_FACTOR = 1;
+const MAX_HEALTH_ETA_FACTOR = 1.8;
+const MIN_SPEED_ETA_FACTOR = 0.75;
+const MAX_SPEED_ETA_FACTOR = 1.6;
+const MIN_VALID_PACE_KMH = 0.3;
+const MAX_VALID_PACE_KMH = 12;
+const GPS_PACE_MIN_INTERVAL_MS = 10000;
+const GPS_PACE_MAX_ACCURACY_M = 50;
+const GPS_PACE_SMOOTHING = 0.45;
+const ETA_SMOOTHING_RATIO = 0.2;
+const ETA_SMOOTHING_MIN_STEP_MIN = 1;
+const ETA_SMOOTHING_MAX_STEP_MIN = 3;
 // GPS를 아직 못 잡았을 때 지도 최초 렌더에만 쓰는 viewport 좌표.
 // 절대 "현위치" 값으로 사용하지 않습니다(현위치는 실제 GPS만 반영).
 const INITIAL_CAMERA = { latitude: 36.5, longitude: 127.8 };
@@ -169,6 +188,113 @@ function parseElevationMeters(elevationStr: string | undefined): number {
   if (!elevationStr) return 0;
   const value = Number(elevationStr.replace(/[^\d.-]/g, ""));
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function getUserAgeYears(age: string | null | undefined): number {
+  const parsed = Number.parseInt(String(age ?? "").replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_USER_AGE;
+}
+
+function getToblerSpeedKmh(slopePercent: number): number {
+  const slopeRatio = slopePercent / 100;
+  const speed = 6 * Math.exp(-3.5 * Math.abs(slopeRatio + 0.05));
+  return clampNumber(speed, 0.5, 6);
+}
+
+function getHealthEtaFactor(
+  age: string | null | undefined,
+  heartRateValue: number | null | undefined,
+  spo2Value: number | null | undefined,
+): number {
+  const userAge = getUserAgeYears(age);
+  const maxHeartRate = Math.max(1, 220 - userAge);
+  const heartRate =
+    typeof heartRateValue === "number" && heartRateValue > 0
+      ? heartRateValue
+      : null;
+  const heartRateRatio = heartRate
+    ? clampNumber(heartRate / maxHeartRate, 0.35, 1.2)
+    : HR_RATIO_BASELINE;
+  const heartRateLoad = Math.max(0, heartRateRatio - HR_RATIO_BASELINE);
+
+  const spo2 =
+    typeof spo2Value === "number" && spo2Value > 0 ? spo2Value : null;
+  const spo2Drop = spo2
+    ? clampNumber(DEFAULT_SPO2_BASELINE - spo2, 0, MAX_SPO2_DROP)
+    : 0;
+
+  return clampNumber(
+    1 + HR_ETA_WEIGHT * heartRateLoad + SPO2_ETA_WEIGHT * spo2Drop,
+    MIN_HEALTH_ETA_FACTOR,
+    MAX_HEALTH_ETA_FACTOR,
+  );
+}
+
+function getSpeedEtaFactor(
+  toblerSpeedKmh: number,
+  recentPaceKmh: number | null | undefined,
+): number {
+  const paceKmh =
+    typeof recentPaceKmh === "number" && recentPaceKmh > MIN_VALID_PACE_KMH
+      ? recentPaceKmh
+      : DEFAULT_PACE_KMH;
+  return clampNumber(
+    toblerSpeedKmh / paceKmh,
+    MIN_SPEED_ETA_FACTOR,
+    MAX_SPEED_ETA_FACTOR,
+  );
+}
+
+function calculateAdjustedEtaMinutes({
+  remainingKm,
+  slopePercent,
+  recentPaceKmh,
+  age,
+  heartRate,
+  spo2,
+}: {
+  remainingKm: number;
+  slopePercent: number;
+  recentPaceKmh: number;
+  age: string | null | undefined;
+  heartRate: number | null | undefined;
+  spo2: number | null | undefined;
+}): number {
+  if (remainingKm <= 0.03) return 0;
+
+  const toblerSpeedKmh = getToblerSpeedKmh(slopePercent);
+  const baseEtaMinutes = (remainingKm / toblerSpeedKmh) * 60;
+  const healthFactor = getHealthEtaFactor(age, heartRate, spo2);
+  const speedFactor = getSpeedEtaFactor(toblerSpeedKmh, recentPaceKmh);
+
+  return Math.max(
+    1,
+    Math.round(baseEtaMinutes * healthFactor * speedFactor),
+  );
+}
+
+function smoothEtaMinutes(previousEta: number, targetEta: number): number {
+  const target = Math.max(0, Math.round(targetEta));
+  if (!Number.isFinite(previousEta) || previousEta <= 0 || target <= 0) {
+    return target;
+  }
+
+  const diff = target - previousEta;
+  if (Math.abs(diff) <= ETA_SMOOTHING_MIN_STEP_MIN) return target;
+
+  const step = clampNumber(
+    Math.ceil(Math.abs(diff) * ETA_SMOOTHING_RATIO),
+    ETA_SMOOTHING_MIN_STEP_MIN,
+    ETA_SMOOTHING_MAX_STEP_MIN,
+  );
+  const next = previousEta + Math.sign(diff) * step;
+
+  return diff > 0 ? Math.min(target, next) : Math.max(target, next);
 }
 
 function estimateCalories(
@@ -350,6 +476,14 @@ export default function LiveMapScreen() {
   const hasGpsRemainingRef = useRef(false);
   // 최신 pace를 GPS effect에서 참조 (deps 추가 없이)
   const currentPaceRef = useRef(0);
+  const gpsPaceRef = useRef(0);
+  const gpsPaceSampleRef = useRef<{ remainingKm: number; time: number } | null>(
+    null,
+  );
+  const latestLocationMetaRef = useRef<{
+    accuracy: number | null;
+    timestamp: number;
+  } | null>(null);
 
   /* ── 토글 상태 ── */
   const [dynamicAnalysis, setDynamicAnalysis] = useState(true);
@@ -378,6 +512,11 @@ export default function LiveMapScreen() {
     const nextLocation = {
       latitude: location.coords.latitude,
       longitude: location.coords.longitude,
+    };
+
+    latestLocationMetaRef.current = {
+      accuracy: location.coords.accuracy ?? null,
+      timestamp: location.timestamp || Date.now(),
     };
 
     setCurrentLocation(nextLocation);
@@ -667,6 +806,13 @@ export default function LiveMapScreen() {
     setEndPoint(null);
     setRemainingDist(0);
     setDynamicEta(0);
+    setCurrentPace(0);
+    stepHistoryRef.current = [];
+    hasWatchPaceRef.current = false;
+    hasGpsRemainingRef.current = false;
+    currentPaceRef.current = 0;
+    gpsPaceRef.current = 0;
+    gpsPaceSampleRef.current = null;
     setUnifiedPathPartChunks([]);
     setIsPaused(false);
   };
@@ -846,8 +992,15 @@ export default function LiveMapScreen() {
     setTotalRouteDistanceKm(initialDistanceKm);
     setStaticEta(initialMinutes);
     setDynamicEta(initialMinutes);
+    setCurrentPace(0);
     setTimeSaved(0);
     setIsPaused(false);
+    stepHistoryRef.current = [];
+    hasWatchPaceRef.current = false;
+    hasGpsRemainingRef.current = false;
+    currentPaceRef.current = 0;
+    gpsPaceRef.current = 0;
+    gpsPaceSampleRef.current = null;
     hikeStartedAt.current = Date.now();
   }, [courseId, initialDistanceKm, initialMinutes]);
 
@@ -972,7 +1125,7 @@ export default function LiveMapScreen() {
 
       setTotalRouteDistanceKm(realDistKm || initialDistanceKm);
       setRemainingDist(realDistKm);
-      setDynamicEta(realEtaMin);
+      setDynamicEta((prev) => smoothEtaMinutes(prev, realEtaMin));
       setTimeSaved(Math.max(0, staticEta - realEtaMin));
 
       // 경로 데이터 설정
@@ -1171,15 +1324,20 @@ export default function LiveMapScreen() {
       //    GPS로 남은거리를 산출 중이면(hasGpsRemainingRef) 시뮬레이션 차감은 건너뛴다.
       if (!hasGpsRemainingRef.current) {
         setRemainingDist((prevDist) => {
-          const travelDist = (currentPace / 3600) * 10;
+          const paceKmh =
+            currentPace > MIN_VALID_PACE_KMH ? currentPace : DEFAULT_PACE_KMH;
+          const travelDist = (paceKmh / 3600) * 10;
           const nextDist = Math.max(0, prevDist - travelDist);
+          const calculatedEta = calculateAdjustedEtaMinutes({
+            remainingKm: nextDist,
+            slopePercent: currentSlope,
+            recentPaceKmh: paceKmh,
+            age: user?.age,
+            heartRate,
+            spo2: latestWatchData?.spo2,
+          });
 
-          const slopeAdjustment = 1 + (Math.abs(currentSlope) / 10) * 0.5;
-          const calculatedEta = Math.round(
-            (nextDist / (currentPace / slopeAdjustment)) * 60,
-          );
-
-          setDynamicEta(nextDist > 0 ? Math.max(1, calculatedEta) : 0);
+          setDynamicEta((prev) => smoothEtaMinutes(prev, calculatedEta));
 
           return nextDist;
         });
@@ -1192,8 +1350,11 @@ export default function LiveMapScreen() {
     routePath,
     currentPace,
     currentSlope,
+    heartRate,
     isPaused,
     isWatchHrLive,
+    latestWatchData?.spo2,
+    user?.age,
   ]);
 
   /* ── 최신 pace를 ref에 동기화 (GPS effect에서 deps 없이 참조) ── */
@@ -1220,12 +1381,71 @@ export default function LiveMapScreen() {
     hasGpsRemainingRef.current = true; // 이후 시뮬레이션 거리 차감 중단
     setRemainingDist(remainKm);
 
-    // 남은시간 = 남은거리 / 속도. pace 없으면 기본 3km/h(백엔드와 동일 가정)
-    const paceKmh = currentPaceRef.current > 0.3 ? currentPaceRef.current : 3;
-    const slopeAdj = 1 + (Math.abs(currentSlope) / 10) * 0.5;
-    const etaMin = Math.round((remainKm / (paceKmh / slopeAdj)) * 60);
-    setDynamicEta(remainKm > 0.03 ? Math.max(1, etaMin) : 0);
-  }, [currentLocation, routePath, isPaused, currentSlope]);
+    const locationMeta = latestLocationMetaRef.current;
+    const measuredAt = locationMeta?.timestamp ?? Date.now();
+    const accuracy = locationMeta?.accuracy;
+    const canMeasureGpsPace =
+      accuracy == null || accuracy <= GPS_PACE_MAX_ACCURACY_M;
+    let recentPaceKmh =
+      gpsPaceRef.current > MIN_VALID_PACE_KMH
+        ? gpsPaceRef.current
+        : currentPaceRef.current;
+
+    if (canMeasureGpsPace) {
+      const previousSample = gpsPaceSampleRef.current;
+      if (!previousSample) {
+        gpsPaceSampleRef.current = { remainingKm: remainKm, time: measuredAt };
+      } else {
+        const elapsedMs = measuredAt - previousSample.time;
+        if (elapsedMs >= GPS_PACE_MIN_INTERVAL_MS) {
+          const progressedKm = previousSample.remainingKm - remainKm;
+          if (progressedKm > 0) {
+            const measuredPaceKmh = progressedKm / (elapsedMs / 3600000);
+            if (
+              measuredPaceKmh > MIN_VALID_PACE_KMH &&
+              measuredPaceKmh < MAX_VALID_PACE_KMH
+            ) {
+              const smoothedPace =
+                gpsPaceRef.current > MIN_VALID_PACE_KMH
+                  ? gpsPaceRef.current * (1 - GPS_PACE_SMOOTHING) +
+                    measuredPaceKmh * GPS_PACE_SMOOTHING
+                  : measuredPaceKmh;
+              gpsPaceRef.current = smoothedPace;
+              recentPaceKmh = smoothedPace;
+              setCurrentPace(smoothedPace);
+            } else if (measuredPaceKmh <= MIN_VALID_PACE_KMH) {
+              gpsPaceRef.current = 0;
+              recentPaceKmh = 0;
+              setCurrentPace(0);
+            }
+          } else {
+            gpsPaceRef.current = 0;
+            recentPaceKmh = 0;
+            setCurrentPace(0);
+          }
+          gpsPaceSampleRef.current = { remainingKm: remainKm, time: measuredAt };
+        }
+      }
+    }
+
+    const etaMin = calculateAdjustedEtaMinutes({
+      remainingKm: remainKm,
+      slopePercent: currentSlope,
+      recentPaceKmh,
+      age: user?.age,
+      heartRate,
+      spo2: latestWatchData?.spo2,
+    });
+    setDynamicEta((prev) => smoothEtaMinutes(prev, etaMin));
+  }, [
+    currentLocation,
+    routePath,
+    isPaused,
+    currentSlope,
+    user?.age,
+    heartRate,
+    latestWatchData?.spo2,
+  ]);
 
   /* ── 워치 생체데이터를 현재 페이스/심박수에 반영 ── */
   useEffect(() => {
@@ -1307,6 +1527,9 @@ export default function LiveMapScreen() {
   const statusBarHeight =
     Platform.OS === "android" ? (StatusBar.currentHeight ?? 24) : 44;
   const isLoading = loading || unifiedLoading;
+  const hasActiveNavigation = Boolean(courseId && routePath.length > 0);
+  const canPauseNavigation =
+    hasActiveNavigation && remainingDist > 0 && dynamicEta > 0;
   const estimatedDurationMinutes = Math.max(
     1,
     Math.round((Date.now() - hikeStartedAt.current) / 60000),
@@ -1840,25 +2063,27 @@ export default function LiveMapScreen() {
                     </Text>
                   </View>
 
-                  {courseId && remainingDist > 0 && dynamicEta > 0 && (
+                  {hasActiveNavigation && (
                     <View style={styles.navButtonRow}>
-                      <TouchableOpacity
-                        style={[
-                          styles.navButton,
-                          { backgroundColor: "#f97316" },
-                        ]}
-                        onPress={handlePauseResume}
-                        activeOpacity={0.8}
-                      >
-                        <Ionicons
-                          name={isPaused ? "play" : "pause"}
-                          size={18}
-                          color="#ffffff"
-                        />
-                        <Text style={styles.navButtonText}>
-                          {isPaused ? "재개하기" : "일시정지"}
-                        </Text>
-                      </TouchableOpacity>
+                      {canPauseNavigation && (
+                        <TouchableOpacity
+                          style={[
+                            styles.navButton,
+                            { backgroundColor: "#f97316" },
+                          ]}
+                          onPress={handlePauseResume}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons
+                            name={isPaused ? "play" : "pause"}
+                            size={18}
+                            color="#ffffff"
+                          />
+                          <Text style={styles.navButtonText}>
+                            {isPaused ? "재개하기" : "일시정지"}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                       <TouchableOpacity
                         style={[
                           styles.navButton,
