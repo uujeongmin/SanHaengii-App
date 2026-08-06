@@ -82,7 +82,7 @@ export default ({ config }) => {
       package: "com.dohwi.sanhaengii",
     },
     web: {
-      output: "static",
+      output: "single",
       favicon: "./assets/images/favicon.png",
     },
     plugins,
