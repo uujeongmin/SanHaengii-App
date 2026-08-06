@@ -90,5 +90,11 @@ export default ({ config }) => {
       typedRoutes: true,
       reactCompiler: true,
     },
+    owner: "jjeongminn",
+    extra: {
+      eas: {
+        projectId: "c506eb2c-a780-4e4e-bb85-7388ca5d9a0e",
+      },
+    },
   };
 };
